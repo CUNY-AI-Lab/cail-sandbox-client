@@ -32,13 +32,33 @@ const sandbox = createCailSandboxClient({
   app: "kale-workbench",
 });
 const credential = { kind: "jwt" as const, token: identityJwt };
-const box = await sandbox.create(credential);
-await sandbox.writeFile(box.id, "main.py", new Blob(["print('hello')"]), credential);
-for await (const event of await sandbox.exec(box.id, "python main.py", credential)) {
+const box = await sandbox.create(
+  { scopeKey: conversationScopeKey, idempotencyKey: crypto.randomUUID() },
+  credential,
+);
+const operation = await sandbox.createSession(
+  box,
+  { operationId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() },
+  credential,
+);
+await sandbox.writeFile(
+  box,
+  operation,
+  "main.py",
+  new Blob(["print('hello')"]),
+  credential,
+);
+for await (const event of await sandbox.exec(
+  box,
+  operation,
+  "python main.py",
+  credential,
+)) {
   if (event.type === "stdout") console.log(new TextDecoder().decode(event.data));
   if (event.type === "error") throw new Error(event.message);
 }
-await sandbox.destroy(box.id, credential);
+await sandbox.destroySession(box, operation, credential);
+// Keep `box` for the next command in this conversation. Destroy it on reset.
 ```
 
 At a server request boundary, adopt correlation once and pass it to each
@@ -48,10 +68,18 @@ sandbox operation:
 import { correlationFromHeaders } from "@cuny-ai-lab/cail-sandbox-client";
 
 const correlation = correlationFromHeaders(request);
-const box = await sandbox.create(credential, { correlation });
-const session = await sandbox.createSession(box.id, credential, { correlation });
-await sandbox.exec(box.id, "python main.py", credential, {
-  sessionId: session.id,
+const box = await sandbox.create(
+  { scopeKey: conversationScopeKey, idempotencyKey: createAttemptKey },
+  credential,
+  { correlation },
+);
+const operation = await sandbox.createSession(
+  box,
+  { operationId, idempotencyKey: operationAttemptKey },
+  credential,
+  { correlation },
+);
+await sandbox.exec(box, operation, "python main.py", credential, {
   correlation,
 });
 ```
@@ -62,6 +90,6 @@ routes, raw-file methods, and shared error headers. Build output is committed so
 Git dependencies resolve without running a package build.
 
 This repository is still a local PoC. The client and wire contract are tested;
-the bridge is not deployed, and production authentication, durable ownership,
-live Cloudflare Sandbox behavior, egress policy, billing, and cleanup remain
-live-pilot work.
+the bridge is not deployed. Durable ownership and expiry alarms are implemented
+but still need live Cloudflare verification, along with production
+authentication, egress policy, and billing.

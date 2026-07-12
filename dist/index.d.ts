@@ -6,10 +6,32 @@ export type CailSandboxCredential = {
     token: string;
 };
 export type SandboxState = "active" | "destroying" | "destroyed";
+export interface SandboxLease {
+    id: string;
+    leaseCapability: string;
+    leaseGeneration: number;
+}
 export interface SandboxLifecycle {
     id: string;
     state: "active";
-    expires_at: string;
+    expiresAt: string;
+    leaseCapability: string;
+    leaseGeneration: number;
+}
+export interface SandboxOperation {
+    id: string;
+    operationId: string;
+    operationCapability: string;
+    operationGeneration: number;
+    expiresAt: string;
+}
+export interface CreateSandboxInput {
+    scopeKey: string;
+    idempotencyKey: string;
+}
+export interface CreateOperationInput {
+    operationId: string;
+    idempotencyKey: string;
 }
 export interface CommandOutputEvent {
     type: "stdout" | "stderr";
@@ -44,25 +66,23 @@ export interface SandboxCallOptions {
     correlation?: CailCorrelation;
     signal?: AbortSignal;
 }
-export interface SandboxExecOptions extends SandboxCallOptions {
-    sessionId?: string;
-}
+export type SandboxExecOptions = SandboxCallOptions;
 export interface SandboxRunning {
     running: boolean;
     state: SandboxState;
-    expires_at: string;
+    expiresAt: string;
+    incarnation: string | null;
+    leaseGeneration: number;
 }
 export interface CailSandboxClient {
-    create(credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxLifecycle>;
-    running(id: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxRunning>;
-    destroy(id: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
-    createSession(id: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<{
-        id: string;
-    }>;
-    destroySession(id: string, sessionId: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
-    readFile(id: string, path: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Response>;
-    writeFile(id: string, path: string, body: BodyInit, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
-    exec(id: string, command: string, credential: CailSandboxCredential, options?: SandboxExecOptions): Promise<AsyncGenerator<CommandOutputEvent | CommandTerminalEvent>>;
+    create(input: CreateSandboxInput, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxLifecycle>;
+    running(lease: SandboxLease, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxRunning>;
+    destroy(lease: SandboxLease, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
+    createSession(lease: SandboxLease, input: CreateOperationInput, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxOperation>;
+    destroySession(lease: SandboxLease, operation: SandboxOperation, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
+    readFile(lease: SandboxLease, operation: SandboxOperation, path: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Response>;
+    writeFile(lease: SandboxLease, operation: SandboxOperation, path: string, body: BodyInit, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
+    exec(lease: SandboxLease, operation: SandboxOperation, command: string, credential: CailSandboxCredential, options?: SandboxExecOptions): Promise<AsyncGenerator<CommandOutputEvent | CommandTerminalEvent>>;
     openapi(credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Record<string, unknown>>;
 }
 export declare function createCailSandboxClient(options: SandboxClientOptions): CailSandboxClient;

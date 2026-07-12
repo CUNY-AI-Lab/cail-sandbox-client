@@ -23,6 +23,8 @@ export class CailSandboxError extends Error {
     }
 }
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 function isRecord(value) {
@@ -39,6 +41,122 @@ function responseShouldRetry(response) {
     if (value === "false")
         return false;
     return null;
+}
+function controlValue(value, name) {
+    if (!CONTROL_VALUE.test(value)) {
+        throw new Error(`${name} must be a high-entropy opaque value`);
+    }
+    return value;
+}
+function leaseHeaders(lease) {
+    encodeId(lease.id);
+    return {
+        "x-cail-sandbox-lease": controlValue(lease.leaseCapability, "leaseCapability"),
+    };
+}
+function operationHeaders(lease, operation) {
+    encodeId(operation.id);
+    return {
+        ...leaseHeaders(lease),
+        "x-cail-session-id": operation.id,
+        "x-cail-operation-id": controlValue(operation.operationId, "operationId"),
+        "x-cail-operation-capability": controlValue(operation.operationCapability, "operationCapability"),
+    };
+}
+async function parseSuccessRecord(response, message) {
+    let body;
+    try {
+        body = await response.json();
+    }
+    catch {
+        throw new CailSandboxError("invalid_response", message, response.status);
+    }
+    if (!isRecord(body)) {
+        throw new CailSandboxError("invalid_response", message, response.status);
+    }
+    return body;
+}
+function isDateTime(value) {
+    if (typeof value !== "string")
+        return false;
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+    if (!match)
+        return false;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText] = match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return (month >= 1 &&
+        month <= 12 &&
+        day >= 1 &&
+        day <= daysInMonth[month - 1] &&
+        Number(hourText) <= 23 &&
+        Number(minuteText) <= 59 &&
+        Number(secondText) <= 59 &&
+        (offsetHourText === undefined || Number(offsetHourText) <= 23) &&
+        (offsetMinuteText === undefined || Number(offsetMinuteText) <= 59));
+}
+async function parseLifecycle(response) {
+    const message = "Sandbox lifecycle response was malformed.";
+    const body = await parseSuccessRecord(response, message);
+    if (typeof body.id !== "string" ||
+        !UUID.test(body.id) ||
+        body.state !== "active" ||
+        !isDateTime(body.expires_at) ||
+        typeof body.lease_capability !== "string" ||
+        !CONTROL_VALUE.test(body.lease_capability) ||
+        !Number.isInteger(body.lease_generation) ||
+        body.lease_generation < 1) {
+        throw new CailSandboxError("invalid_response", message, response.status);
+    }
+    return {
+        id: body.id,
+        state: "active",
+        expiresAt: body.expires_at,
+        leaseCapability: body.lease_capability,
+        leaseGeneration: body.lease_generation,
+    };
+}
+async function parseOperation(response, operationId) {
+    const message = "Sandbox operation response was malformed.";
+    const body = await parseSuccessRecord(response, message);
+    if (typeof body.id !== "string" ||
+        !UUID.test(body.id) ||
+        typeof body.operation_capability !== "string" ||
+        !CONTROL_VALUE.test(body.operation_capability) ||
+        !Number.isInteger(body.operation_generation) ||
+        body.operation_generation < 1 ||
+        !isDateTime(body.expires_at)) {
+        throw new CailSandboxError("invalid_response", message, response.status);
+    }
+    return {
+        id: body.id,
+        operationId,
+        operationCapability: body.operation_capability,
+        operationGeneration: body.operation_generation,
+        expiresAt: body.expires_at,
+    };
+}
+async function parseRunning(response) {
+    const message = "Sandbox status response was malformed.";
+    const body = await parseSuccessRecord(response, message);
+    if (typeof body.running !== "boolean" ||
+        !["active", "destroying", "destroyed"].includes(String(body.state)) ||
+        !isDateTime(body.expires_at) ||
+        (body.incarnation !== null && typeof body.incarnation !== "string") ||
+        !Number.isInteger(body.lease_generation) ||
+        body.lease_generation < 1) {
+        throw new CailSandboxError("invalid_response", message, response.status);
+    }
+    return {
+        running: body.running,
+        state: body.state,
+        expiresAt: body.expires_at,
+        incarnation: body.incarnation,
+        leaseGeneration: body.lease_generation,
+    };
 }
 async function parseError(response) {
     const requestId = responseRequestId(response);
@@ -118,46 +236,65 @@ export function createCailSandboxClient(options) {
         return response;
     };
     return {
-        async create(credential, callOptions) {
+        async create(input, credential, callOptions) {
             const response = await call("/sandbox/v1/sandbox", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: "{}",
+                body: JSON.stringify({
+                    scope_key: controlValue(input.scopeKey, "scopeKey"),
+                    idempotency_key: controlValue(input.idempotencyKey, "idempotencyKey"),
+                }),
             }, credential, callOptions);
-            return response.json();
+            return parseLifecycle(response);
         },
-        async running(id, credential, callOptions) {
-            const response = await call(`/sandbox/v1/sandbox/${encodeId(id)}/running`, {}, credential, callOptions);
-            return response.json();
+        async running(lease, credential, callOptions) {
+            const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/running`, { headers: leaseHeaders(lease) }, credential, callOptions);
+            return parseRunning(response);
         },
-        async destroy(id, credential, callOptions) {
-            await call(`/sandbox/v1/sandbox/${encodeId(id)}`, { method: "DELETE" }, credential, callOptions);
+        async destroy(lease, credential, callOptions) {
+            await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}`, { method: "DELETE", headers: leaseHeaders(lease) }, credential, callOptions);
         },
-        async createSession(id, credential, callOptions) {
-            const response = await call(`/sandbox/v1/sandbox/${encodeId(id)}/session`, { method: "POST" }, credential, callOptions);
-            return response.json();
+        async createSession(lease, input, credential, callOptions) {
+            const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/session`, {
+                method: "POST",
+                headers: {
+                    ...leaseHeaders(lease),
+                    "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                    operation_id: controlValue(input.operationId, "operationId"),
+                    idempotency_key: controlValue(input.idempotencyKey, "idempotencyKey"),
+                }),
+            }, credential, callOptions);
+            return parseOperation(response, input.operationId);
         },
-        async destroySession(id, sessionId, credential, callOptions) {
-            await call(`/sandbox/v1/sandbox/${encodeId(id)}/session/${encodeId(sessionId)}`, { method: "DELETE" }, credential, callOptions);
+        async destroySession(lease, operation, credential, callOptions) {
+            await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/session/${encodeId(operation.id)}`, { method: "DELETE", headers: operationHeaders(lease, operation) }, credential, callOptions);
         },
-        async readFile(id, path, credential, callOptions) {
-            return call(`/sandbox/v1/sandbox/${encodeId(id)}/file/${encodePath(path)}`, {}, credential, callOptions);
+        async readFile(lease, operation, path, credential, callOptions) {
+            return call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, { headers: operationHeaders(lease, operation) }, credential, callOptions);
         },
-        async writeFile(id, path, body, credential, callOptions) {
-            await call(`/sandbox/v1/sandbox/${encodeId(id)}/file/${encodePath(path)}`, { method: "PUT", body }, credential, callOptions);
+        async writeFile(lease, operation, path, body, credential, callOptions) {
+            await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, {
+                method: "PUT",
+                body,
+                headers: {
+                    ...operationHeaders(lease, operation),
+                    "content-type": "application/octet-stream",
+                },
+            }, credential, callOptions);
         },
-        async exec(id, command, credential, execOptions = {}) {
-            const response = await call(`/sandbox/v1/sandbox/${encodeId(id)}/exec`, {
+        async exec(lease, operation, command, credential, execOptions = {}) {
+            const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/exec`, {
                 method: "POST",
                 headers: {
                     "content-type": "application/json",
                     accept: "text/event-stream",
+                    ...operationHeaders(lease, operation),
                 },
                 body: JSON.stringify({
                     command,
-                    ...(execOptions.sessionId
-                        ? { session_id: execOptions.sessionId }
-                        : {}),
+                    session_id: operation.id,
                 }),
                 signal: execOptions.signal,
             }, credential, execOptions);
@@ -177,17 +314,15 @@ function isAbortError(error) {
 // The gateway contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
 function encodeId(id) {
-    if (id.length === 0 ||
-        id.includes("/") ||
-        id.includes("\\") ||
-        id.includes("..") ||
-        /[\u0000-\u001f\u007f]/.test(id)) {
+    if (!UUID.test(id)) {
         throw new Error("id must be a sandbox-issued identifier");
     }
     return encodeURIComponent(id);
 }
 function encodePath(path) {
-    if (path.startsWith("/") || path.split("/").some((part) => part === "..")) {
+    if (path.length === 0 ||
+        path.startsWith("/") ||
+        path.split("/").some((part) => part === "..")) {
         throw new Error("file path must be workspace-relative");
     }
     return path.split("/").map(encodeURIComponent).join("/");

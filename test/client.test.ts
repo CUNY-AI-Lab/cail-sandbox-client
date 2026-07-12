@@ -6,6 +6,46 @@ import {
 } from "../src/index";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
+const createInput = {
+  scopeKey: "scope-key-000000000000000000000000000001",
+  idempotencyKey: "create-key-0000000000000000000000000001",
+};
+const lease = {
+  id: "11111111-1111-4111-8111-111111111111",
+  leaseCapability: "lease-capability-00000000000000000000001",
+  leaseGeneration: 1,
+};
+const operationInput = {
+  operationId: "operation-00000000000000000000000000001",
+  idempotencyKey: "operation-key-00000000000000000000000001",
+};
+const operation = {
+  id: "22222222-2222-4222-8222-222222222222",
+  operationId: operationInput.operationId,
+  operationCapability: "operation-capability-0000000000000000001",
+  operationGeneration: 1,
+  expiresAt: "2026-07-12T12:00:00.000Z",
+};
+const leaseWire = {
+  id: lease.id,
+  state: "active",
+  expires_at: "2026-07-12T12:00:00.000Z",
+  lease_capability: lease.leaseCapability,
+  lease_generation: lease.leaseGeneration,
+};
+const operationWire = {
+  id: operation.id,
+  operation_capability: operation.operationCapability,
+  operation_generation: operation.operationGeneration,
+  expires_at: operation.expiresAt,
+};
+const runningWire = {
+  running: true,
+  state: "active",
+  expires_at: "2026-07-12T12:00:00.000Z",
+  incarnation: "placement-1",
+  lease_generation: 1,
+};
 const correlation: CailCorrelation = {
   trace_id: "0af7651916cd43dd8448eb211c80319c",
   span_id: "b7ad6b7169203331",
@@ -19,16 +59,24 @@ test("owns exactly one CAIL credential and app header", async () => {
     app: "kale-workbench",
     fetchImpl: async (input, init) => {
       seen = new Request(input, init);
-      return Response.json(
-        { id: "x", state: "active", expires_at: "later" },
-        { status: 201 },
-      );
+      return Response.json(leaseWire, { status: 201 });
     },
   });
-  await client.create(jwt);
+  const created = await client.create(createInput, jwt);
   expect(seen.headers.get("x-cail-identity-jwt")).toBe("session-token");
   expect(seen.headers.get("authorization")).toBeNull();
   expect(seen.headers.get("x-cail-app")).toBe("kale-workbench");
+  expect(await seen.json()).toEqual({
+    scope_key: createInput.scopeKey,
+    idempotency_key: createInput.idempotencyKey,
+  });
+  expect(created).toEqual({
+    id: lease.id,
+    state: "active",
+    expiresAt: "2026-07-12T12:00:00.000Z",
+    leaseCapability: lease.leaseCapability,
+    leaseGeneration: 1,
+  });
   expect("call" in client).toBeFalse();
 });
 
@@ -39,16 +87,82 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
     app: "kale",
     fetchImpl: async (input, init) => {
       seen = new Request(input, init);
-      return Response.json({ running: true, state: "destroying", expires_at: "later" });
+      return Response.json({ ...runningWire, state: "destroying" });
     },
   });
-  const result = await client.running("box", jwt, { correlation });
+  const result = await client.running(lease, jwt, { correlation });
   expect(result.state).toBe("destroying");
   expect(seen.headers.get("x-cail-request-id")).toBe("req-123");
   expect(seen.headers.get("traceparent")).toBe(
     "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
   );
-  expect(seen.url).toBe("https://x/sandbox/v1/sandbox/box/running");
+  expect(seen.url).toBe(
+    `https://x/sandbox/v1/sandbox/${lease.id}/running`,
+  );
+  expect(seen.headers.get("x-cail-sandbox-lease")).toBe(
+    lease.leaseCapability,
+  );
+});
+
+test("binds session, file, exec, and cleanup calls to one operation capability", async () => {
+  const seen: Request[] = [];
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      seen.push(request);
+      if (request.url.endsWith("/session")) return Response.json(operationWire);
+      if (request.url.endsWith("/exec")) {
+        return new Response('event: exit\ndata: {"exit_code":0}\n\n');
+      }
+      if (request.method === "GET") return new Response("file");
+      return new Response(null, { status: 204 });
+    },
+  });
+  const createdOperation = await client.createSession(
+    lease,
+    operationInput,
+    jwt,
+  );
+  await client.writeFile(lease, createdOperation, "a.txt", "data", jwt);
+  for await (const event of await client.exec(
+    lease,
+    createdOperation,
+    "true",
+    jwt,
+  )) {
+    void event;
+  }
+  await client.readFile(lease, createdOperation, "a.txt", jwt);
+  await client.destroySession(lease, createdOperation, jwt);
+
+  expect(createdOperation.operationId).toBe(operationInput.operationId);
+  expect(await seen[0].json()).toEqual({
+    operation_id: operationInput.operationId,
+    idempotency_key: operationInput.idempotencyKey,
+  });
+  for (const request of seen) {
+    expect(request.headers.get("x-cail-sandbox-lease")).toBe(
+      lease.leaseCapability,
+    );
+  }
+  for (const request of seen.slice(1)) {
+    expect(request.headers.get("x-cail-session-id")).toBe(operation.id);
+    expect(request.headers.get("x-cail-operation-id")).toBe(
+      operation.operationId,
+    );
+    expect(request.headers.get("x-cail-operation-capability")).toBe(
+      operation.operationCapability,
+    );
+  }
+  expect(await seen[2].json()).toEqual({
+    command: "true",
+    session_id: operation.id,
+  });
+  expect(seen[1].headers.get("content-type")).toBe(
+    "application/octet-stream",
+  );
 });
 
 test("forwards AbortSignal on every typed sandbox operation", async () => {
@@ -61,11 +175,11 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
       const request = new Request(input, init);
       seen.push(request.signal);
       if (request.url.endsWith("/sandbox")) {
-        return Response.json({ id: "box", state: "active", expires_at: "later" });
+        return Response.json(leaseWire);
       }
-      if (request.url.endsWith("/session")) return Response.json({ id: "session" });
+      if (request.url.endsWith("/session")) return Response.json(operationWire);
       if (request.url.endsWith("/running")) {
-        return Response.json({ running: true, state: "active", expires_at: "later" });
+        return Response.json(runningWire);
       }
       if (request.url.endsWith("/openapi.json")) return Response.json({ openapi: "3.1.1" });
       if (request.method === "GET") return new Response("data");
@@ -73,13 +187,13 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
     },
   });
   const options = { signal: controller.signal };
-  await client.create(jwt, options);
-  await client.running("box", jwt, options);
-  await client.createSession("box", jwt, options);
-  await client.writeFile("box", "a.txt", "data", jwt, options);
-  await client.readFile("box", "a.txt", jwt, options);
-  await client.destroySession("box", "session", jwt, options);
-  await client.destroy("box", jwt, options);
+  await client.create(createInput, jwt, options);
+  await client.running(lease, jwt, options);
+  await client.createSession(lease, operationInput, jwt, options);
+  await client.writeFile(lease, operation, "a.txt", "data", jwt, options);
+  await client.readFile(lease, operation, "a.txt", jwt, options);
+  await client.destroySession(lease, operation, jwt, options);
+  await client.destroy(lease, jwt, options);
   await client.openapi(jwt, options);
   controller.abort();
   expect(seen).toHaveLength(8);
@@ -97,11 +211,80 @@ test("rejects malformed correlation before fetch", async () => {
     },
   });
   await expect(
-    client.create(jwt, {
+    client.create(createInput, jwt, {
       correlation: { ...correlation, request_id: "has spaces" },
     }),
   ).rejects.toMatchObject({ code: "invalid_correlation", status: 0 });
   expect(calls).toBe(0);
+});
+
+test("rejects malformed scope and capability values before fetch", async () => {
+  let calls = 0;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response();
+    },
+  });
+  await expect(
+    client.create({ ...createInput, scopeKey: "conversation-1" }, jwt),
+  ).rejects.toThrow("high-entropy opaque value");
+  await expect(
+    client.running({ ...lease, leaseCapability: "not-a-capability" }, jwt),
+  ).rejects.toThrow("high-entropy opaque value");
+  await expect(
+    client.exec(
+      lease,
+      { ...operation, operationCapability: "not-a-capability" },
+      "true",
+      jwt,
+    ),
+  ).rejects.toThrow("high-entropy opaque value");
+  expect(calls).toBe(0);
+});
+
+test("normalizes malformed server-issued capabilities to invalid_response", async () => {
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json({ ...leaseWire, lease_capability: "too-short" }),
+  });
+  const error = await client.create(createInput, jwt).catch((caught) => caught);
+  expect(error).toBeInstanceOf(CailSandboxError);
+  expect(error).toMatchObject({ code: "invalid_response" });
+});
+
+test("normalizes invalid JSON and null success bodies to invalid_response", async () => {
+  for (const response of [new Response("not json"), Response.json(null)]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => response,
+    });
+    const error = await client.create(createInput, jwt).catch((caught) => caught);
+    expect(error).toBeInstanceOf(CailSandboxError);
+    expect(error).toMatchObject({ code: "invalid_response" });
+  }
+});
+
+test("rejects non-RFC3339 and impossible lifecycle timestamps", async () => {
+  for (const expires_at of [
+    "2026-07-12",
+    "July 12, 2026",
+    "2026-02-30T12:00:00Z",
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => Response.json({ ...leaseWire, expires_at }),
+    });
+    const error = await client.create(createInput, jwt).catch((caught) => caught);
+    expect(error).toBeInstanceOf(CailSandboxError);
+    expect(error).toMatchObject({ code: "invalid_response" });
+  }
 });
 
 test("preserves raw file response", async () => {
@@ -113,7 +296,7 @@ test("preserves raw file response", async () => {
     app: "kale",
     fetchImpl: async () => original,
   });
-  expect(await client.readFile("box", "a.bin", jwt)).toBe(original);
+  expect(await client.readFile(lease, operation, "a.bin", jwt)).toBe(original);
 });
 
 test("parses nested CAIL errors and response metadata", async () => {
@@ -140,7 +323,7 @@ test("parses nested CAIL errors and response metadata", async () => {
         },
       ),
   });
-  const error = await client.running("x", jwt).catch((caught) => caught);
+  const error = await client.running(lease, jwt).catch((caught) => caught);
   expect(error).toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({
     code: "forbidden",
@@ -173,7 +356,7 @@ test("rejects malformed nested envelopes but retains response metadata", async (
         },
       ),
   });
-  const error = await client.running("x", jwt).catch((caught) => caught);
+  const error = await client.running(lease, jwt).catch((caught) => caught);
   expect(error).toMatchObject({
     code: "unknown_error",
     requestId: "req-malformed",
@@ -191,7 +374,7 @@ test("streams decoded output and one terminal event", async () => {
       new Response(body, { headers: { "content-type": "text/event-stream" } }),
   });
   const output = [];
-  for await (const event of await client.exec("box", "echo hi", jwt)) {
+  for await (const event of await client.exec(lease, operation, "echo hi", jwt)) {
     output.push(event);
   }
   expect(output[0]).toEqual({
@@ -220,7 +403,7 @@ test("uses standard SSE framing across CRLF and split chunks", async () => {
       new Response(stream, { headers: { "content-type": "text/event-stream" } }),
   });
   const output = [];
-  for await (const event of await client.exec("box", "echo hi", jwt)) {
+  for await (const event of await client.exec(lease, operation, "echo hi", jwt)) {
     output.push(event);
   }
   expect(output).toHaveLength(2);
@@ -246,7 +429,7 @@ test("canceling iteration cancels the underlying command response", async () => 
     fetchImpl: async () =>
       new Response(stream, { headers: { "content-type": "text/event-stream" } }),
   });
-  const events = await client.exec("box", "long command", jwt);
+  const events = await client.exec(lease, operation, "long command", jwt);
   expect((await events.next()).value).toEqual({
     type: "stdout",
     data: new TextEncoder().encode("x"),
@@ -264,7 +447,7 @@ test("rejects unknown SSE event types consistently", async () => {
   });
   await expect(
     (async () => {
-      for await (const event of await client.exec("box", "x", jwt)) void event;
+      for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
     })(),
   ).rejects.toThrow("unknown event type");
 });
@@ -278,7 +461,7 @@ test("rejects stream without exactly one terminal event", async () => {
   });
   await expect(
     (async () => {
-      for await (const event of await client.exec("box", "x", jwt)) void event;
+      for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
     })(),
   ).rejects.toThrow("without a terminal");
 });
@@ -339,7 +522,7 @@ test("normalizes mid-stream transport errors to a typed invalid_stream", async (
       new Response(stream, { headers: { "content-type": "text/event-stream" } }),
   });
   const error = await (async () => {
-    for await (const event of await client.exec("box", "x", jwt)) void event;
+    for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
   })().catch((caught) => caught);
   expect(error).toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({ code: "invalid_stream" });
@@ -362,7 +545,7 @@ test("surfaces a mid-stream abort as an abort, not invalid_stream", async () => 
       new Response(stream, { headers: { "content-type": "text/event-stream" } }),
   });
   const error = await (async () => {
-    for await (const event of await client.exec("box", "x", jwt)) void event;
+    for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
   })().catch((caught) => caught);
   expect(error).not.toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({ name: "AbortError" });
@@ -378,18 +561,18 @@ test("rejects path-shaped sandbox and session ids client-side", async () => {
       return new Response();
     },
   });
-  await expect(client.running("..", jwt)).rejects.toThrow("identifier");
-  await expect(client.destroy("a/../b", jwt)).rejects.toThrow("identifier");
-  await expect(client.readFile("box\\evil", "a.txt", jwt)).rejects.toThrow(
+  await expect(client.running({ ...lease, id: ".." }, jwt)).rejects.toThrow("identifier");
+  await expect(client.destroy({ ...lease, id: "a/../b" }, jwt)).rejects.toThrow("identifier");
+  await expect(client.readFile({ ...lease, id: "box\\evil" }, operation, "a.txt", jwt)).rejects.toThrow(
     "identifier",
   );
-  await expect(client.destroySession("box", "..", jwt)).rejects.toThrow(
+  await expect(client.destroySession(lease, { ...operation, id: ".." }, jwt)).rejects.toThrow(
     "identifier",
   );
-  await expect(client.createSession("id\nwith-control", jwt)).rejects.toThrow(
+  await expect(client.createSession({ ...lease, id: "id\nwith-control" }, operationInput, jwt)).rejects.toThrow(
     "identifier",
   );
-  await expect(client.exec("", "x", jwt)).rejects.toThrow("identifier");
+  await expect(client.exec({ ...lease, id: "" }, operation, "x", jwt)).rejects.toThrow("identifier");
   expect(calls).toBe(0);
 });
 
@@ -400,10 +583,13 @@ test("accepts contract-shaped uuid ids", async () => {
     app: "kale",
     fetchImpl: async (input, init) => {
       seen = new Request(input, init);
-      return Response.json({ running: true, state: "active", expires_at: "later" });
+      return Response.json(runningWire);
     },
   });
-  await client.running("123e4567-e89b-42d3-a456-426614174000", jwt);
+  await client.running(
+    { ...lease, id: "123e4567-e89b-42d3-a456-426614174000" },
+    jwt,
+  );
   expect(seen.url).toBe(
     "https://x/sandbox/v1/sandbox/123e4567-e89b-42d3-a456-426614174000/running",
   );
@@ -415,7 +601,10 @@ test("rejects client-side path traversal", async () => {
     app: "kale",
     fetchImpl: async () => new Response(),
   });
-  await expect(client.readFile("box", "../secret", jwt)).rejects.toThrow(
+  await expect(client.readFile(lease, operation, "../secret", jwt)).rejects.toThrow(
+    "workspace-relative",
+  );
+  await expect(client.readFile(lease, operation, "", jwt)).rejects.toThrow(
     "workspace-relative",
   );
 });

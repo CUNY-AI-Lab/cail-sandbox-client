@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "3525c9bd2b0a3655051a1d8aaf93d70ad9b584259dcc43b045c8664294d61661";
+  "e12f9074c20fef013f8026a17f04551330f25088bf6a8158732dbfbe96cc171c";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -12,7 +12,7 @@ test("pins the reviewed gateway OpenAPI artifact", () => {
     CONTRACT_SHA256,
   );
   expect(OPENAPI.openapi).toBe("3.1.1");
-  expect(OPENAPI.info.version).toBe("0.0.1");
+  expect(OPENAPI.info.version).toBe("0.1.0");
 });
 
 test("thin client wraps every authenticated sandbox operation", () => {
@@ -72,6 +72,10 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   expect(file).toHaveProperty("get");
   expect(file).toHaveProperty("put");
   expect(OPENAPI.paths).toHaveProperty("/sandbox/v1/sandbox/{id}/session");
+  expect(OPENAPI.components.parameters).toHaveProperty("LeaseCapability");
+  expect(OPENAPI.components.parameters).toHaveProperty("OperationCapability");
+  expect(OPENAPI.components.schemas).toHaveProperty("CreateSandboxRequest");
+  expect(OPENAPI.components.schemas).toHaveProperty("CreateSessionRequest");
   expect(OPENAPI.components.responses.Error.headers).toHaveProperty(
     "X-CAIL-Request-Id",
   );
