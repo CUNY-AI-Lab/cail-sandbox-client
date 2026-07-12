@@ -22,12 +22,21 @@ export interface SandboxLease {
   leaseCapability: string;
   leaseGeneration: number;
 }
+export interface SandboxComputeQuota {
+  limitGibSeconds: number;
+  usedGibSeconds: number;
+  remainingGibSeconds: number;
+  unit: "gib-seconds";
+  mode: "shadow" | "admission" | "enforce";
+  state: "ok" | "exhausted";
+}
 export interface SandboxLifecycle {
   id: string;
   state: "active";
   expiresAt: string;
   leaseCapability: string;
   leaseGeneration: number;
+  quota?: SandboxComputeQuota | null;
 }
 export interface SandboxOperation {
   id: string;
@@ -35,6 +44,7 @@ export interface SandboxOperation {
   operationCapability: string;
   operationGeneration: number;
   expiresAt: string;
+  quota?: SandboxComputeQuota | null;
 }
 export interface CreateSandboxInput {
   scopeKey: string;
@@ -62,6 +72,7 @@ export class CailSandboxError extends Error {
     readonly details: Record<string, unknown> = {},
     readonly requestId: string | null = null,
     readonly shouldRetry: boolean | null = null,
+    readonly quota: SandboxComputeQuota | null = null,
   ) {
     super(message);
     this.name = "CailSandboxError";
@@ -83,6 +94,8 @@ export interface SandboxClientOptions {
 export interface SandboxCallOptions {
   correlation?: CailCorrelation;
   signal?: AbortSignal;
+  /** Admission-time snapshot. Call running() after work for a fresh reading. */
+  onQuota?: (quota: SandboxComputeQuota) => void;
 }
 
 export type SandboxExecOptions = SandboxCallOptions;
@@ -93,6 +106,7 @@ export interface SandboxRunning {
   expiresAt: string;
   incarnation: string | null;
   leaseGeneration: number;
+  quota?: SandboxComputeQuota | null;
 }
 
 export interface CailSandboxClient {
@@ -165,6 +179,63 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]) {
   return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+const SANDBOX_QUOTA_HEADERS = [
+  "x-cail-sandbox-quota-limit",
+  "x-cail-sandbox-quota-used",
+  "x-cail-sandbox-quota-remaining",
+  "x-cail-sandbox-quota-unit",
+  "x-cail-sandbox-quota-mode",
+  "x-cail-sandbox-quota-state",
+] as const;
+
+function nonnegativeHeaderInteger(value: string | null) {
+  if (value === null || !/^(?:0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+export function sandboxQuotaFromHeaders(
+  headers: Headers,
+): SandboxComputeQuota | null {
+  const values = SANDBOX_QUOTA_HEADERS.map((name) => headers.get(name));
+  if (values.every((value) => value === null)) return null;
+  if (values.some((value) => value === null)) {
+    throw new CailSandboxError(
+      "invalid_response",
+      "Sandbox quota headers were incomplete.",
+      0,
+    );
+  }
+  const [limitText, usedText, remainingText, unit, mode, state] = values;
+  const limitGibSeconds = nonnegativeHeaderInteger(limitText);
+  const usedGibSeconds = nonnegativeHeaderInteger(usedText);
+  const remainingGibSeconds = nonnegativeHeaderInteger(remainingText);
+  if (
+    limitGibSeconds === null ||
+    usedGibSeconds === null ||
+    remainingGibSeconds === null ||
+    remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
+    unit !== "gib-seconds" ||
+    (mode !== "shadow" && mode !== "admission" && mode !== "enforce") ||
+    (state !== "ok" && state !== "exhausted") ||
+    (state === "exhausted" && remainingGibSeconds !== 0)
+  ) {
+    throw new CailSandboxError(
+      "invalid_response",
+      "Sandbox quota headers were malformed.",
+      0,
+    );
+  }
+  return {
+    limitGibSeconds,
+    usedGibSeconds,
+    remainingGibSeconds,
+    unit,
+    mode,
+    state,
+  };
 }
 
 function credentialHeaders(credential: CailSandboxCredential) {
@@ -306,6 +377,7 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
     expiresAt: body.expires_at,
     leaseCapability: body.lease_capability,
     leaseGeneration: body.lease_generation as number,
+    quota: sandboxQuotaFromHeaders(response.headers),
   };
 }
 
@@ -337,6 +409,7 @@ async function parseOperation(
     operationCapability: body.operation_capability,
     operationGeneration: body.operation_generation as number,
     expiresAt: body.expires_at,
+    quota: sandboxQuotaFromHeaders(response.headers),
   };
 }
 
@@ -364,12 +437,19 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
     expiresAt: body.expires_at,
     incarnation: body.incarnation as string | null,
     leaseGeneration: body.lease_generation as number,
+    quota: sandboxQuotaFromHeaders(response.headers),
   };
 }
 
 async function parseError(response: Response): Promise<CailSandboxError> {
   const requestId = responseRequestId(response);
   const shouldRetry = responseShouldRetry(response);
+  let quota: SandboxComputeQuota | null = null;
+  try {
+    quota = sandboxQuotaFromHeaders(response.headers);
+  } catch {
+    // Quota metadata is ancillary on an error; preserve the finalized error.
+  }
   let body: unknown;
   try {
     body = await response.json();
@@ -383,6 +463,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
       {},
       requestId,
       shouldRetry,
+      quota,
     );
   }
 
@@ -407,6 +488,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
         cail === undefined ? {} : { ...cail },
         requestId,
         shouldRetry,
+        quota,
       );
     }
   }
@@ -420,6 +502,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
     {},
     requestId,
     shouldRetry,
+    quota,
   );
 }
 
@@ -493,6 +576,14 @@ export function createCailSandboxClient(
       signal: callOptions?.signal ?? init.signal,
     });
     if (!response.ok) throw await parseError(response);
+    const quota = sandboxQuotaFromHeaders(response.headers);
+    if (quota && callOptions?.onQuota) {
+      try {
+        callOptions.onQuota(quota);
+      } catch {
+        // Observation must never change an already-admitted remote operation.
+      }
+    }
     return response;
   };
 

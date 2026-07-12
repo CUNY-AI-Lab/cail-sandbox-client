@@ -3,6 +3,7 @@ import {
   CailSandboxError,
   createCailSandboxClient,
   type CailCorrelation,
+  type SandboxComputeQuota,
 } from "../src/index";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
@@ -25,6 +26,7 @@ const operation = {
   operationCapability: "operation-capability-0000000000000000001",
   operationGeneration: 1,
   expiresAt: "2026-07-12T12:00:00.000Z",
+  quota: null,
 };
 const leaseWire = {
   id: lease.id,
@@ -76,8 +78,109 @@ test("owns exactly one CAIL credential and app header", async () => {
     expiresAt: "2026-07-12T12:00:00.000Z",
     leaseCapability: lease.leaseCapability,
     leaseGeneration: 1,
+    quota: null,
   });
   expect("call" in client).toBeFalse();
+});
+
+test("parses the all-or-none sandbox compute quota headers", async () => {
+  const headers = {
+    "x-cail-sandbox-quota-limit": "10",
+    "x-cail-sandbox-quota-used": "3",
+    "x-cail-sandbox-quota-remaining": "7",
+    "x-cail-sandbox-quota-unit": "gib-seconds",
+    "x-cail-sandbox-quota-mode": "shadow",
+    "x-cail-sandbox-quota-state": "ok",
+  };
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => Response.json(leaseWire, { status: 201, headers }),
+  });
+  expect((await client.create(createInput, jwt)).quota).toEqual({
+    limitGibSeconds: 10,
+    usedGibSeconds: 3,
+    remainingGibSeconds: 7,
+    unit: "gib-seconds",
+    mode: "shadow",
+    state: "ok",
+  });
+
+  const malformed = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(leaseWire, {
+        status: 201,
+        headers: { "x-cail-sandbox-quota-limit": "10" },
+      }),
+  });
+  await expect(malformed.create(createInput, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+  });
+
+  const blocked = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(
+        { error: { message: "Over quota.", type: "rate_limit_error", param: null, code: "quota_exceeded" } },
+        { status: 429, headers: { ...headers, "x-cail-sandbox-quota-used": "10", "x-cail-sandbox-quota-remaining": "0", "x-cail-sandbox-quota-state": "exhausted" } },
+      ),
+  });
+  const error = await blocked.create(createInput, jwt).catch((caught) => caught);
+  expect(error).toMatchObject({
+    code: "quota_exceeded",
+    quota: { remainingGibSeconds: 0, state: "exhausted" },
+  });
+
+  const blockedWithPartialQuota = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(
+        { error: { message: "Over quota.", type: "rate_limit_error", param: null, code: "quota_exceeded" } },
+        { status: 429, headers: { "x-cail-sandbox-quota-limit": "10" } },
+      ),
+  });
+  const partialError = await blockedWithPartialQuota.create(createInput, jwt).catch((caught) => caught);
+  expect(partialError).toMatchObject({ code: "quota_exceeded", quota: null });
+
+  const contradictory = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(leaseWire, {
+        status: 201,
+        headers: { ...headers, "x-cail-sandbox-quota-state": "exhausted" },
+      }),
+  });
+  await expect(contradictory.create(createInput, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+  });
+});
+
+test("surfaces admission-time quota on cost-driving calls", async () => {
+  const headers = {
+    "x-cail-sandbox-quota-limit": "10",
+    "x-cail-sandbox-quota-used": "2",
+    "x-cail-sandbox-quota-remaining": "8",
+    "x-cail-sandbox-quota-unit": "gib-seconds",
+    "x-cail-sandbox-quota-mode": "enforce",
+    "x-cail-sandbox-quota-state": "ok",
+  };
+  const observed: SandboxComputeQuota[] = [];
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      new Response('event: exit\ndata: {"exit_code":0}\n\n', { headers }),
+  });
+  for await (const event of await client.exec(lease, operation, "true", jwt, {
+    onQuota: (quota) => observed.push(quota),
+  })) void event;
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toMatchObject({ remainingGibSeconds: 8, mode: "enforce" });
 });
 
 test("forwards cail-log correlation on typed sandbox operations", async () => {

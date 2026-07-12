@@ -18,9 +18,10 @@ file, OpenAPI, and exec call accepts a Web-standard `AbortSignal`; typed errors 
 the response's `x-request-id` and `x-should-retry` values. WHATWG event-stream framing is delegated to the maintained
 `eventsource-parser` package, including CRLF/chunk handling and a bounded parser
 buffer. It contains no Cloudflare SDK and no durable credential.
-Unknown event names are rejected. The iterator reads through stream closure to
-enforce exactly one terminal event; callers should pass an `AbortSignal` for
-their own deadline, and stopping iteration cancels the underlying response.
+Unknown event names are rejected. The first valid terminal event completes the
+iterator and cancels the transport. Callers should pass an `AbortSignal` for
+their own deadline. Use `onQuota` for admission-time quota headers and call
+`running()` after a command for a fresh remaining-budget reading.
 
 ```ts
 import { createCailSandboxClient } from "@cuny-ai-lab/cail-sandbox-client";

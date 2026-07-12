@@ -11,12 +11,21 @@ export interface SandboxLease {
     leaseCapability: string;
     leaseGeneration: number;
 }
+export interface SandboxComputeQuota {
+    limitGibSeconds: number;
+    usedGibSeconds: number;
+    remainingGibSeconds: number;
+    unit: "gib-seconds";
+    mode: "shadow" | "admission" | "enforce";
+    state: "ok" | "exhausted";
+}
 export interface SandboxLifecycle {
     id: string;
     state: "active";
     expiresAt: string;
     leaseCapability: string;
     leaseGeneration: number;
+    quota?: SandboxComputeQuota | null;
 }
 export interface SandboxOperation {
     id: string;
@@ -24,6 +33,7 @@ export interface SandboxOperation {
     operationCapability: string;
     operationGeneration: number;
     expiresAt: string;
+    quota?: SandboxComputeQuota | null;
 }
 export interface CreateSandboxInput {
     scopeKey: string;
@@ -54,7 +64,8 @@ export declare class CailSandboxError extends Error {
     readonly details: Record<string, unknown>;
     readonly requestId: string | null;
     readonly shouldRetry: boolean | null;
-    constructor(code: string, message: string, status: number, type?: string, param?: string | null, details?: Record<string, unknown>, requestId?: string | null, shouldRetry?: boolean | null);
+    readonly quota: SandboxComputeQuota | null;
+    constructor(code: string, message: string, status: number, type?: string, param?: string | null, details?: Record<string, unknown>, requestId?: string | null, shouldRetry?: boolean | null, quota?: SandboxComputeQuota | null);
 }
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export interface SandboxClientOptions {
@@ -65,6 +76,8 @@ export interface SandboxClientOptions {
 export interface SandboxCallOptions {
     correlation?: CailCorrelation;
     signal?: AbortSignal;
+    /** Admission-time snapshot. Call running() after work for a fresh reading. */
+    onQuota?: (quota: SandboxComputeQuota) => void;
 }
 export type SandboxExecOptions = SandboxCallOptions;
 export interface SandboxRunning {
@@ -73,6 +86,7 @@ export interface SandboxRunning {
     expiresAt: string;
     incarnation: string | null;
     leaseGeneration: number;
+    quota?: SandboxComputeQuota | null;
 }
 export interface CailSandboxClient {
     create(input: CreateSandboxInput, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxLifecycle>;
@@ -85,5 +99,6 @@ export interface CailSandboxClient {
     exec(lease: SandboxLease, operation: SandboxOperation, command: string, credential: CailSandboxCredential, options?: SandboxExecOptions): Promise<AsyncGenerator<CommandOutputEvent | CommandTerminalEvent>>;
     openapi(credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Record<string, unknown>>;
 }
+export declare function sandboxQuotaFromHeaders(headers: Headers): SandboxComputeQuota | null;
 export declare function createCailSandboxClient(options: SandboxClientOptions): CailSandboxClient;
 //# sourceMappingURL=index.d.ts.map
