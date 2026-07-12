@@ -1,0 +1,33 @@
+# @cuny-ai-lab/cail-sandbox-client
+
+A small Web-standard client for CAIL-governed remote execution. It is separate
+from `@cuny-ai-lab/cail-client`: sandbox lifecycle, raw files, command SSE, and
+execution scopes are not model-inference semantics.
+
+The client owns `X-CAIL-App` and exactly one CAIL credential, returns raw file
+`Response` objects without buffering, decodes base64 command output, requires
+exactly one terminal SSE event, and exposes nested CAIL errors as
+`CailSandboxError`. It contains no Cloudflare SDK and no durable credential.
+
+```ts
+import { createCailSandboxClient } from "@cuny-ai-lab/cail-sandbox-client";
+
+// Kale-shaped server/controller example: pass the verified user's short-lived
+// session JWT at call time. Never save it in workspace files or command env.
+const sandbox = createCailSandboxClient({
+  baseUrl: "https://api.example.edu",
+  app: "kale-workbench",
+});
+const credential = { kind: "jwt" as const, token: identityJwt };
+const box = await sandbox.create(credential);
+await sandbox.writeFile(box.id, "main.py", new Blob(["print('hello')"]), credential);
+for await (const event of await sandbox.exec(box.id, "python main.py", credential)) {
+  if (event.type === "stdout") console.log(new TextDecoder().decode(event.data));
+  if (event.type === "error") throw new Error(event.message);
+}
+await sandbox.destroy(box.id, credential);
+```
+
+The local contract test checks this reviewed wrapper against the gateway's
+filtered OpenAPI route inventory. A published package should additionally pin
+a generated OpenAPI artifact/hash in both release pipelines.
