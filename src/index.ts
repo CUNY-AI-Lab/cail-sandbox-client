@@ -60,11 +60,11 @@ export interface SandboxClientOptions {
 
 export interface SandboxCallOptions {
   correlation?: CailCorrelation;
+  signal?: AbortSignal;
 }
 
 export interface SandboxExecOptions extends SandboxCallOptions {
   sessionId?: string;
-  signal?: AbortSignal;
 }
 
 export interface SandboxRunning {
@@ -263,6 +263,7 @@ export function createCailSandboxClient(
       ...init,
       headers,
       redirect: "error",
+      signal: callOptions?.signal ?? init.signal,
     });
     if (!response.ok) throw await parseError(response);
     return response;

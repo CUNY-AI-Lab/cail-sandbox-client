@@ -42,10 +42,10 @@ export interface SandboxClientOptions {
 }
 export interface SandboxCallOptions {
     correlation?: CailCorrelation;
+    signal?: AbortSignal;
 }
 export interface SandboxExecOptions extends SandboxCallOptions {
     sessionId?: string;
-    signal?: AbortSignal;
 }
 export interface SandboxRunning {
     running: boolean;

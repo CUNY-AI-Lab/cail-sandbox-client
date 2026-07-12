@@ -111,6 +111,7 @@ export function createCailSandboxClient(options) {
             ...init,
             headers,
             redirect: "error",
+            signal: callOptions?.signal ?? init.signal,
         });
         if (!response.ok)
             throw await parseError(response);

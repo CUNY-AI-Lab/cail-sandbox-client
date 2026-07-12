@@ -51,6 +51,41 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
   expect(seen.url).toBe("https://x/sandbox/v1/sandbox/box/running");
 });
 
+test("forwards AbortSignal on every typed sandbox operation", async () => {
+  const controller = new AbortController();
+  const seen: AbortSignal[] = [];
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      seen.push(request.signal);
+      if (request.url.endsWith("/sandbox")) {
+        return Response.json({ id: "box", state: "active", expires_at: "later" });
+      }
+      if (request.url.endsWith("/session")) return Response.json({ id: "session" });
+      if (request.url.endsWith("/running")) {
+        return Response.json({ running: true, state: "active", expires_at: "later" });
+      }
+      if (request.url.endsWith("/openapi.json")) return Response.json({ openapi: "3.1.1" });
+      if (request.method === "GET") return new Response("data");
+      return new Response(null, { status: 204 });
+    },
+  });
+  const options = { signal: controller.signal };
+  await client.create(jwt, options);
+  await client.running("box", jwt, options);
+  await client.createSession("box", jwt, options);
+  await client.writeFile("box", "a.txt", "data", jwt, options);
+  await client.readFile("box", "a.txt", jwt, options);
+  await client.destroySession("box", "session", jwt, options);
+  await client.destroy("box", jwt, options);
+  await client.openapi(jwt, options);
+  controller.abort();
+  expect(seen).toHaveLength(8);
+  expect(seen.every((signal) => signal.aborted)).toBeTrue();
+});
+
 test("rejects malformed correlation before fetch", async () => {
   let calls = 0;
   const client = createCailSandboxClient({
