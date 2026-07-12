@@ -1,0 +1,178 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "CAIL Sandbox Gateway",
+    "version": "0.0.1",
+    "description": "Bounded CAIL-governed remote execution. Sandbox IDs are identifiers, not authorization credentials."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [{ "url": "/" }],
+  "security": [{ "bearerAuth": [] }, { "identityJwt": [] }],
+  "x-cail-poc-auth-override": "The local Worker entrypoint substitutes one shared PoC bearer plus X-CAIL-PoC-Subject. Production must implement the security schemes declared here through verified gateway/key-service authorization results.",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "security": [],
+        "responses": {
+          "200": { "description": "Liveness only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } }
+        }
+      }
+    },
+    "/sandbox/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenApi",
+        "parameters": [{ "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "200": { "description": "This OpenAPI document", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox": {
+      "post": {
+        "operationId": "createSandbox",
+        "parameters": [{ "$ref": "#/components/parameters/App" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "responses": {
+          "201": { "description": "Sandbox admitted and created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxLifecycle" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}": {
+      "delete": {
+        "operationId": "destroySandbox",
+        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "204": { "description": "Destroyed or already destroyed" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/running": {
+      "get": {
+        "operationId": "isSandboxRunning",
+        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "200": { "description": "Current liveness and CAIL lifecycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Running" } } } },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/exec": {
+      "post": {
+        "operationId": "execCommand",
+        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecRequest" } } } },
+        "responses": {
+          "200": { "description": "WHATWG event stream containing base64 stdout/stderr and exactly one terminal exit/error event", "content": { "text/event-stream": { "schema": { "type": "string" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/file/{path}": {
+      "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/FilePath" }, { "$ref": "#/components/parameters/App" }],
+      "get": {
+        "operationId": "readFile",
+        "responses": {
+          "200": { "description": "Raw workspace-contained file bytes", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "put": {
+        "operationId": "writeFile",
+        "requestBody": { "required": true, "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+        "responses": {
+          "200": { "description": "File written", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/session": {
+      "post": {
+        "operationId": "createSession",
+        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "201": { "description": "Explicit session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Id" } } } },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/session/{sid}": {
+      "delete": {
+        "operationId": "destroySession",
+        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/SessionId" }, { "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "204": { "description": "Session destroyed" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Scoped personal or delegated CAIL credential. Query-string credentials are not accepted." },
+      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "Verified CAIL session JWT at the trusted boundary." }
+    },
+    "parameters": {
+      "App": { "name": "X-CAIL-App", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } },
+      "SandboxId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "SessionId": { "name": "sid", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "FilePath": { "name": "path", "in": "path", "required": true, "description": "Slash-preserving, percent-encoded path relative to /workspace", "schema": { "type": "string", "minLength": 1 } }
+    },
+    "responses": {
+      "Error": {
+        "description": "CAIL nested error envelope",
+        "headers": {
+          "X-CAIL-Request-Id": { "required": true, "description": "Canonical inter-service correlation id", "schema": { "type": "string" } },
+          "x-request-id": { "required": true, "schema": { "type": "string" } },
+          "x-should-retry": { "required": true, "schema": { "type": "string", "enum": ["true", "false"] } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      }
+    },
+    "schemas": {
+      "Health": { "type": "object", "required": ["status", "service"], "properties": { "status": { "const": "healthy" }, "service": { "const": "cail-sandbox-bridge" } }, "additionalProperties": false },
+      "Id": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
+      "Ok": { "type": "object", "required": ["ok"], "properties": { "ok": { "const": true } }, "additionalProperties": false },
+      "SandboxLifecycle": { "type": "object", "required": ["id", "state", "expires_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "state": { "const": "active" }, "expires_at": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "Running": { "type": "object", "required": ["running", "state", "expires_at"], "properties": { "running": { "type": "boolean" }, "state": { "enum": ["active", "destroying", "destroyed"] }, "expires_at": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
+      "ExecRequest": { "type": "object", "required": ["command"], "properties": { "command": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
+      "ErrorEnvelope": { "type": "object", "required": ["error"], "properties": { "error": { "$ref": "#/components/schemas/ErrorObject" } }, "additionalProperties": false },
+      "ErrorObject": { "type": "object", "required": ["message", "type", "param", "code"], "properties": { "message": { "type": "string" }, "type": { "enum": ["invalid_request_error", "authentication_error", "permission_error", "conflict_error", "rate_limit_error", "server_error"] }, "param": { "type": ["string", "null"] }, "code": { "type": "string" }, "cail": { "type": "object", "additionalProperties": true } }, "additionalProperties": false }
+    }
+  }
+}

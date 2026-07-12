@@ -11,14 +11,16 @@
     }
   },
   "types": "./dist/index.d.ts",
-  "files": ["dist", "src", "README.md"],
+  "files": ["contract", "dist", "src", "README.md"],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "prepare": "bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5",
@@ -26,6 +28,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95e028a",
     "eventsource-parser": "3.1.0"
   }
 }
