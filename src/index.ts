@@ -1,3 +1,5 @@
+import { EventSourceParserStream } from "eventsource-parser/stream";
+
 export type CailSandboxCredential = { kind:"jwt"|"key"; token:string };
 export type SandboxState = "active"|"destroyed";
 export interface SandboxLifecycle { id:string; state:SandboxState; expires_at:string }
@@ -13,4 +15,39 @@ export function createCailSandboxClient(options:SandboxClientOptions){if(!option
  return { call, async create(c:CailSandboxCredential){const r=await call("/sandbox/v1/sandbox",{method:"POST",headers:{"content-type":"application/json"},body:"{}"},c);return r.json() as Promise<SandboxLifecycle>}, async running(id:string,c:CailSandboxCredential){const r=await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/running`,{},c);return r.json() as Promise<{running:boolean;state:SandboxState;expires_at:string}>}, async destroy(id:string,c:CailSandboxCredential){await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}`,{method:"DELETE"},c)}, async createSession(id:string,c:CailSandboxCredential){const r=await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/session`,{method:"POST"},c);return r.json() as Promise<{id:string}>}, async destroySession(id:string,sid:string,c:CailSandboxCredential){await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/session/${encodeURIComponent(sid)}`,{method:"DELETE"},c)}, async readFile(id:string,path:string,c:CailSandboxCredential){return call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/file/${encodePath(path)}`,{},c)}, async writeFile(id:string,path:string,body:BodyInit,c:CailSandboxCredential){await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/file/${encodePath(path)}`,{method:"PUT",body},c)}, async exec(id:string,command:string,c:CailSandboxCredential,opts:{sessionId?:string;signal?:AbortSignal}={}){const r=await call(`/sandbox/v1/sandbox/${encodeURIComponent(id)}/exec`,{method:"POST",headers:{"content-type":"application/json","accept":"text/event-stream"},body:JSON.stringify({command,...(opts.sessionId?{session_id:opts.sessionId}:{})}),signal:opts.signal},c);return parseCommandEvents(r)}, async openapi(c:CailSandboxCredential){const r=await call("/sandbox/v1/openapi.json",{},c);return r.json() as Promise<Record<string,unknown>>} };
 }
 function encodePath(p:string){if(p.startsWith("/")||p.split("/").some(x=>x===".."))throw new Error("file path must be workspace-relative");return p.split("/").map(encodeURIComponent).join("/")}
-async function* parseCommandEvents(response:Response):AsyncGenerator<CommandOutputEvent|CommandTerminalEvent>{if(!response.body)throw new CailSandboxError("invalid_stream","Command response had no body.",response.status);const reader=response.body.pipeThrough(new TextDecoderStream()).getReader();let buf="",terminal=false;while(true){const {done,value}=await reader.read();buf+=value??"";let i;while((i=buf.indexOf("\n\n"))>=0){const raw=buf.slice(0,i);buf=buf.slice(i+2);const event=/^event: (.+)$/m.exec(raw)?.[1],data=/^data: (.+)$/m.exec(raw)?.[1];if(!event||!data)continue;const d=JSON.parse(data);if(event==="stdout"||event==="stderr"){if(terminal)throw new CailSandboxError("invalid_stream","Output followed the terminal event.",response.status);yield {type:event,data:Uint8Array.from(atob(d.data),x=>x.charCodeAt(0))}}else if(event==="exit"){if(terminal)throw new CailSandboxError("invalid_stream","Command stream had multiple terminal events.",response.status);terminal=true;yield {type:"exit",exitCode:d.exit_code}}else if(event==="error"){if(terminal)throw new CailSandboxError("invalid_stream","Command stream had multiple terminal events.",response.status);terminal=true;yield {type:"error",code:d.code,message:d.message,requestId:d.request_id}}}if(done)break}if(!terminal)throw new CailSandboxError("invalid_stream","Command stream ended without a terminal event.",response.status)}
+async function* parseCommandEvents(response:Response):AsyncGenerator<CommandOutputEvent|CommandTerminalEvent>{
+  if(!response.body)throw new CailSandboxError("invalid_stream","Command response had no body.",response.status);
+  let terminal=false;
+  const events=response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream({maxBufferSize:2*1024*1024,onError:"terminate"}));
+  const reader=events.getReader();
+  let streamDone=false;
+  try{
+    while(true){
+      const {done,value:message}=await reader.read();
+      if(done){streamDone=true;break}
+      const event=message.event;
+      if(event!=="stdout"&&event!=="stderr"&&event!=="exit"&&event!=="error")throw new CailSandboxError("invalid_stream","Command stream contained an unknown event type.",response.status);
+      let d:Record<string,unknown>;
+      try{d=JSON.parse(message.data) as Record<string,unknown>}catch{throw new CailSandboxError("invalid_stream","Command stream contained invalid JSON.",response.status)}
+      if(event==="stdout"||event==="stderr"){
+        if(terminal)throw new CailSandboxError("invalid_stream","Output followed the terminal event.",response.status);
+        if(typeof d.data!=="string")throw new CailSandboxError("invalid_stream","Command output event was malformed.",response.status);
+        let data:Uint8Array;
+        try{data=Uint8Array.from(atob(d.data),x=>x.charCodeAt(0))}catch{throw new CailSandboxError("invalid_stream","Command output was not valid base64.",response.status)}
+        yield {type:event,data};
+      }else if(event==="exit"){
+        if(terminal)throw new CailSandboxError("invalid_stream","Command stream had multiple terminal events.",response.status);
+        if(typeof d.exit_code!=="number")throw new CailSandboxError("invalid_stream","Command exit event was malformed.",response.status);
+        terminal=true;yield {type:"exit",exitCode:d.exit_code};
+      }else if(event==="error"){
+        if(terminal)throw new CailSandboxError("invalid_stream","Command stream had multiple terminal events.",response.status);
+        if(typeof d.code!=="string"||typeof d.message!=="string"||typeof d.request_id!=="string")throw new CailSandboxError("invalid_stream","Command error event was malformed.",response.status);
+        terminal=true;yield {type:"error",code:d.code,message:d.message,requestId:d.request_id};
+      }
+    }
+  }catch(error){
+    if(error instanceof CailSandboxError)throw error;
+    throw new CailSandboxError("invalid_stream","Command stream framing was invalid.",response.status);
+  }finally{if(!streamDone)await reader.cancel();reader.releaseLock()}
+  if(!terminal)throw new CailSandboxError("invalid_stream","Command stream ended without a terminal event.",response.status);
+}

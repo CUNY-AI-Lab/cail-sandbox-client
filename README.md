@@ -7,7 +7,12 @@ execution scopes are not model-inference semantics.
 The client owns `X-CAIL-App` and exactly one CAIL credential, returns raw file
 `Response` objects without buffering, decodes base64 command output, requires
 exactly one terminal SSE event, and exposes nested CAIL errors as
-`CailSandboxError`. It contains no Cloudflare SDK and no durable credential.
+`CailSandboxError`. WHATWG event-stream framing is delegated to the maintained
+`eventsource-parser` package, including CRLF/chunk handling and a bounded parser
+buffer. It contains no Cloudflare SDK and no durable credential.
+Unknown event names are rejected. The iterator reads through stream closure to
+enforce exactly one terminal event; callers should pass an `AbortSignal` for
+their own deadline, and stopping iteration cancels the underlying response.
 
 ```ts
 import { createCailSandboxClient } from "@cuny-ai-lab/cail-sandbox-client";
@@ -29,5 +34,5 @@ await sandbox.destroy(box.id, credential);
 ```
 
 The local contract test checks this reviewed wrapper against the gateway's
-filtered OpenAPI route inventory. A published package should additionally pin
-a generated OpenAPI artifact/hash in both release pipelines.
+validated OpenAPI 3.1.1 artifact and exact operation inventory. A published
+package should pin that artifact/hash in both release pipelines.
