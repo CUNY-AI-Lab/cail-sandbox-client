@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "e12f9074c20fef013f8026a17f04551330f25088bf6a8158732dbfbe96cc171c";
+  "0239382c0b260c4a4e40faea270991c547ac8de8dbaff8b43d74f5073f933226";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");

@@ -112,11 +112,14 @@ test("binds session, file, exec, and cleanup calls to one operation capability",
     fetchImpl: async (input, init) => {
       const request = new Request(input, init);
       seen.push(request);
-      if (request.url.endsWith("/session")) return Response.json(operationWire);
+      if (request.url.endsWith("/session")) {
+        return Response.json(operationWire, { status: 201 });
+      }
       if (request.url.endsWith("/exec")) {
         return new Response('event: exit\ndata: {"exit_code":0}\n\n');
       }
       if (request.method === "GET") return new Response("file");
+      if (request.method === "PUT") return Response.json({ ok: true });
       return new Response(null, { status: 204 });
     },
   });
@@ -175,14 +178,17 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
       const request = new Request(input, init);
       seen.push(request.signal);
       if (request.url.endsWith("/sandbox")) {
-        return Response.json(leaseWire);
+        return Response.json(leaseWire, { status: 201 });
       }
-      if (request.url.endsWith("/session")) return Response.json(operationWire);
+      if (request.url.endsWith("/session")) {
+        return Response.json(operationWire, { status: 201 });
+      }
       if (request.url.endsWith("/running")) {
         return Response.json(runningWire);
       }
       if (request.url.endsWith("/openapi.json")) return Response.json({ openapi: "3.1.1" });
       if (request.method === "GET") return new Response("data");
+      if (request.method === "PUT") return Response.json({ ok: true });
       return new Response(null, { status: 204 });
     },
   });
@@ -218,6 +224,53 @@ test("rejects malformed correlation before fetch", async () => {
   expect(calls).toBe(0);
 });
 
+test("rejects malformed runtime credentials before fetch", async () => {
+  let calls = 0;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json(runningWire);
+    },
+  });
+  for (const credential of [
+    { kind: "jwt", token: "" },
+    { kind: "other", token: "secret" },
+    { kind: "key", token: "line\nbreak" },
+  ]) {
+    await expect(
+      client.running(lease, credential as typeof jwt),
+    ).rejects.toThrow("valid jwt or key token");
+  }
+  expect(calls).toBe(0);
+});
+
+test("enforces operation-specific success statuses and write acknowledgements", async () => {
+  for (const response of [
+    Response.json(leaseWire),
+    Response.json(leaseWire, { status: 202 }),
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => response.clone(),
+    });
+    await expect(client.create(createInput, jwt)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  }
+
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => Response.json({ ok: false }),
+  });
+  await expect(
+    client.writeFile(lease, operation, "a.txt", "data", jwt),
+  ).rejects.toMatchObject({ code: "invalid_response" });
+});
+
 test("rejects malformed scope and capability values before fetch", async () => {
   let calls = 0;
   const client = createCailSandboxClient({
@@ -231,6 +284,9 @@ test("rejects malformed scope and capability values before fetch", async () => {
   await expect(
     client.create({ ...createInput, scopeKey: "conversation-1" }, jwt),
   ).rejects.toThrow("high-entropy opaque value");
+  await expect(
+    client.exec(lease, operation, "x".repeat(16_385), jwt),
+  ).rejects.toThrow("1-16384");
   await expect(
     client.running({ ...lease, leaseCapability: "not-a-capability" }, jwt),
   ).rejects.toThrow("high-entropy opaque value");
@@ -384,6 +440,34 @@ test("streams decoded output and one terminal event", async () => {
   expect(output[1]).toEqual({ type: "exit", exitCode: 0 });
 });
 
+test("a terminal SSE event completes without waiting for transport EOF", async () => {
+  for (const terminal of [
+    'event: exit\ndata: {"exit_code":0}\n\n',
+    'event: error\ndata: {"code":"command_failed","message":"No.","request_id":"req-1"}\n\n',
+  ]) {
+    let canceled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(terminal));
+      },
+      cancel() {
+        canceled = true;
+      },
+    });
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => new Response(stream),
+    });
+    const output = [];
+    for await (const event of await client.exec(lease, operation, "x", jwt)) {
+      output.push(event);
+    }
+    expect(output).toHaveLength(1);
+    expect(canceled).toBeTrue();
+  }
+});
+
 test("uses standard SSE framing across CRLF and split chunks", async () => {
   const encoder = new TextEncoder();
   const parts = [
@@ -452,6 +536,25 @@ test("rejects unknown SSE event types consistently", async () => {
   ).rejects.toThrow("unknown event type");
 });
 
+test("rejects undeclared or oversized command output event data", async () => {
+  const oversized = btoa("x".repeat(1_048_577));
+  for (const data of [
+    '{"data":"eA==","extra":true}',
+    JSON.stringify({ data: oversized }),
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => new Response(`event: stdout\ndata: ${data}\n\n`),
+    });
+    await expect(
+      (async () => {
+        for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
+      })(),
+    ).rejects.toMatchObject({ code: "invalid_stream" });
+  }
+});
+
 test("rejects stream without exactly one terminal event", async () => {
   const client = createCailSandboxClient({
     baseUrl: "https://x",
@@ -503,6 +606,36 @@ test("rejects non-HTTP schemes and unparseable baseUrls", () => {
       }),
     ).toThrow();
   }
+});
+
+test("rejects baseUrl userinfo, query strings, and fragments", () => {
+  for (const baseUrl of [
+    "https://user:pass@x/api",
+    "https://x/api?tenant=1",
+    "https://x/api#sandbox",
+  ]) {
+    expect(() =>
+      createCailSandboxClient({
+        baseUrl,
+        app: "kale",
+        fetchImpl: async () => new Response(),
+      }),
+    ).toThrow("must not contain");
+  }
+});
+
+test("normalizes a baseUrl path prefix without string-concatenation ambiguity", async () => {
+  let seen!: Request;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x/api/",
+    app: "kale",
+    fetchImpl: async (input, init) => {
+      seen = new Request(input, init);
+      return Response.json({ openapi: "3.1.1" });
+    },
+  });
+  await client.openapi(jwt);
+  expect(seen.url).toBe("https://x/api/sandbox/v1/openapi.json");
 });
 
 test("normalizes mid-stream transport errors to a typed invalid_stream", async () => {

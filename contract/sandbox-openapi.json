@@ -135,6 +135,7 @@
           "404": { "$ref": "#/components/responses/Error" },
           "409": { "$ref": "#/components/responses/Error" },
           "410": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -188,7 +189,7 @@
       "SandboxLifecycle": { "type": "object", "required": ["id", "state", "expires_at", "lease_capability", "lease_generation"], "properties": { "id": { "type": "string", "format": "uuid" }, "state": { "const": "active" }, "expires_at": { "type": "string", "format": "date-time" }, "lease_capability": { "$ref": "#/components/schemas/ControlValue" }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
       "SessionLifecycle": { "type": "object", "required": ["id", "operation_capability", "operation_generation", "expires_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "operation_capability": { "$ref": "#/components/schemas/ControlValue" }, "operation_generation": { "type": "integer", "minimum": 1 }, "expires_at": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
       "Running": { "type": "object", "required": ["running", "state", "expires_at", "incarnation", "lease_generation"], "properties": { "running": { "type": "boolean" }, "state": { "enum": ["active", "destroying", "destroyed"] }, "expires_at": { "type": "string", "format": "date-time" }, "incarnation": { "type": ["string", "null"] }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
-      "ExecRequest": { "type": "object", "required": ["command", "session_id"], "properties": { "command": { "type": "string", "minLength": 1 }, "session_id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
+      "ExecRequest": { "type": "object", "required": ["command", "session_id"], "properties": { "command": { "type": "string", "minLength": 1, "maxLength": 16384 }, "session_id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
       "ErrorEnvelope": { "type": "object", "required": ["error"], "properties": { "error": { "$ref": "#/components/schemas/ErrorObject" } }, "additionalProperties": false },
       "ErrorObject": { "type": "object", "required": ["message", "type", "param", "code"], "properties": { "message": { "type": "string" }, "type": { "enum": ["invalid_request_error", "authentication_error", "permission_error", "conflict_error", "rate_limit_error", "server_error"] }, "param": { "type": ["string", "null"] }, "code": { "type": "string" }, "cail": { "type": "object", "additionalProperties": true } }, "additionalProperties": false }
     }

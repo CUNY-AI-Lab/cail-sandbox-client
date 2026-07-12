@@ -154,11 +154,44 @@ export interface CailSandboxClient {
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_COMMAND_CHARS = 16_384;
+const MAX_OUTPUT_EVENT_BYTES = 1_048_576;
 // WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]) {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function credentialHeaders(credential: CailSandboxCredential) {
+  const candidate = credential as { kind?: unknown; token?: unknown };
+  if (
+    (candidate.kind !== "jwt" && candidate.kind !== "key") ||
+    typeof candidate.token !== "string" ||
+    candidate.token.length === 0 ||
+    candidate.token.length > 8_192 ||
+    !/^[\x21-\x7e]+$/.test(candidate.token)
+  ) {
+    throw new Error("credential must contain a valid jwt or key token");
+  }
+  return candidate.kind === "jwt"
+    ? { "x-cail-identity-jwt": candidate.token }
+    : { authorization: `Bearer ${candidate.token}` };
+}
+
+function requireStatus(response: Response, expected: number) {
+  if (response.status !== expected) {
+    throw new CailSandboxError(
+      "invalid_response",
+      `Sandbox response used unexpected HTTP status ${response.status}.`,
+      response.status,
+    );
+  }
+  return response;
 }
 
 function responseRequestId(response: Response): string | null {
@@ -251,6 +284,7 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
   const message = "Sandbox lifecycle response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
+    !hasOnlyKeys(body, ["id", "state", "expires_at", "lease_capability", "lease_generation"]) ||
     typeof body.id !== "string" ||
     !UUID.test(body.id) ||
     body.state !== "active" ||
@@ -282,6 +316,7 @@ async function parseOperation(
   const message = "Sandbox operation response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
+    !hasOnlyKeys(body, ["id", "operation_capability", "operation_generation", "expires_at"]) ||
     typeof body.id !== "string" ||
     !UUID.test(body.id) ||
     typeof body.operation_capability !== "string" ||
@@ -309,6 +344,7 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
   const message = "Sandbox status response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
+    !hasOnlyKeys(body, ["running", "state", "expires_at", "incarnation", "lease_generation"]) ||
     typeof body.running !== "boolean" ||
     !["active", "destroying", "destroyed"].includes(String(body.state)) ||
     !isDateTime(body.expires_at) ||
@@ -404,12 +440,21 @@ export function createCailSandboxClient(
       "baseUrl must use HTTPS (plain HTTP is allowed only for loopback hosts)",
     );
   }
+  if (
+    parsedBaseUrl.username ||
+    parsedBaseUrl.password ||
+    parsedBaseUrl.search ||
+    parsedBaseUrl.hash
+  ) {
+    throw new Error("baseUrl must not contain credentials, a query, or a fragment");
+  }
   if (!APP.test(options.app)) {
     throw new Error("app must be a stable lowercase slug");
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
-  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const basePath = parsedBaseUrl.pathname.replace(/\/+$/, "");
+  const baseUrl = `${parsedBaseUrl.origin}${basePath === "/" ? "" : basePath}`;
   const call = async (
     path: string,
     init: RequestInit,
@@ -418,13 +463,10 @@ export function createCailSandboxClient(
   ) => {
     const headers = new Headers(init.headers);
     headers.delete("x-cail-identity-jwt");
+    headers.delete("authorization");
     headers.set("x-cail-app", options.app);
-    if (credential.kind === "jwt") {
-      headers.delete("authorization");
-      headers.set("x-cail-identity-jwt", credential.token);
-    } else {
-      headers.delete("x-cail-identity-jwt");
-      headers.set("authorization", `Bearer ${credential.token}`);
+    for (const [name, value] of Object.entries(credentialHeaders(credential))) {
+      headers.set(name, value);
     }
     if (callOptions?.correlation !== undefined) {
       try {
@@ -476,7 +518,7 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
-      return parseLifecycle(response);
+      return parseLifecycle(requireStatus(response, 201));
     },
     async running(
       lease: SandboxLease,
@@ -489,19 +531,20 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
-      return parseRunning(response);
+      return parseRunning(requireStatus(response, 200));
     },
     async destroy(
       lease: SandboxLease,
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
-      await call(
+      const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}`,
         { method: "DELETE", headers: leaseHeaders(lease) },
         credential,
         callOptions,
       );
+      requireStatus(response, 204);
     },
     async createSession(
       lease: SandboxLease,
@@ -528,7 +571,7 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
-      return parseOperation(response, input.operationId);
+      return parseOperation(requireStatus(response, 201), input.operationId);
     },
     async destroySession(
       lease: SandboxLease,
@@ -536,12 +579,13 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
-      await call(
+      const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/session/${encodeId(operation.id)}`,
         { method: "DELETE", headers: operationHeaders(lease, operation) },
         credential,
         callOptions,
       );
+      requireStatus(response, 204);
     },
     async readFile(
       lease: SandboxLease,
@@ -550,12 +594,13 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
-      return call(
+      const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`,
         { headers: operationHeaders(lease, operation) },
         credential,
         callOptions,
       );
+      return requireStatus(response, 200);
     },
     async writeFile(
       lease: SandboxLease,
@@ -565,7 +610,7 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
-      await call(
+      const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`,
         {
           method: "PUT",
@@ -578,6 +623,18 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
+      requireStatus(response, 200);
+      const result = await parseSuccessRecord(
+        response,
+        "Sandbox file-write response was malformed.",
+      );
+      if (!hasOnlyKeys(result, ["ok"]) || result.ok !== true) {
+        throw new CailSandboxError(
+          "invalid_response",
+          "Sandbox file-write response was malformed.",
+          response.status,
+        );
+      }
     },
     async exec(
       lease: SandboxLease,
@@ -586,6 +643,9 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       execOptions: SandboxExecOptions = {},
     ) {
+      if (!command || command.length > MAX_COMMAND_CHARS) {
+        throw new Error(`command must contain 1-${MAX_COMMAND_CHARS} characters`);
+      }
       const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/exec`,
         {
@@ -604,7 +664,7 @@ export function createCailSandboxClient(
         credential,
         execOptions,
       );
-      return parseCommandEvents(response);
+      return parseCommandEvents(requireStatus(response, 200));
     },
     async openapi(
       credential: CailSandboxCredential,
@@ -616,7 +676,11 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
-      return response.json() as Promise<Record<string, unknown>>;
+      const body = await parseSuccessRecord(
+        requireStatus(response, 200),
+        "Sandbox OpenAPI response was malformed.",
+      );
+      return body;
     },
   };
 }
@@ -690,9 +754,9 @@ async function* parseCommandEvents(
           response.status,
         );
       }
-      let data: Record<string, unknown>;
+      let parsed: unknown;
       try {
-        data = JSON.parse(message.data) as Record<string, unknown>;
+        parsed = JSON.parse(message.data);
       } catch {
         throw new CailSandboxError(
           "invalid_stream",
@@ -700,6 +764,14 @@ async function* parseCommandEvents(
           response.status,
         );
       }
+      if (!isRecord(parsed)) {
+        throw new CailSandboxError(
+          "invalid_stream",
+          "Command stream event was malformed.",
+          response.status,
+        );
+      }
+      const data = parsed;
       if (event === "stdout" || event === "stderr") {
         if (terminal) {
           throw new CailSandboxError(
@@ -708,7 +780,7 @@ async function* parseCommandEvents(
             response.status,
           );
         }
-        if (typeof data.data !== "string") {
+        if (!hasOnlyKeys(data, ["data"]) || typeof data.data !== "string") {
           throw new CailSandboxError(
             "invalid_stream",
             "Command output event was malformed.",
@@ -727,6 +799,13 @@ async function* parseCommandEvents(
             response.status,
           );
         }
+        if (bytes.byteLength > MAX_OUTPUT_EVENT_BYTES) {
+          throw new CailSandboxError(
+            "invalid_stream",
+            "Command output event exceeded the CAIL limit.",
+            response.status,
+          );
+        }
         yield { type: event, data: bytes };
       } else if (event === "exit") {
         if (terminal) {
@@ -736,7 +815,10 @@ async function* parseCommandEvents(
             response.status,
           );
         }
-        if (typeof data.exit_code !== "number") {
+        if (
+          !hasOnlyKeys(data, ["exit_code"]) ||
+          !Number.isInteger(data.exit_code)
+        ) {
           throw new CailSandboxError(
             "invalid_stream",
             "Command exit event was malformed.",
@@ -744,7 +826,8 @@ async function* parseCommandEvents(
           );
         }
         terminal = true;
-        yield { type: "exit", exitCode: data.exit_code };
+        yield { type: "exit", exitCode: data.exit_code as number };
+        return;
       } else {
         if (terminal) {
           throw new CailSandboxError(
@@ -754,6 +837,7 @@ async function* parseCommandEvents(
           );
         }
         if (
+          !hasOnlyKeys(data, ["code", "message", "request_id"]) ||
           typeof data.code !== "string" ||
           typeof data.message !== "string" ||
           typeof data.request_id !== "string"
@@ -771,6 +855,7 @@ async function* parseCommandEvents(
           message: data.message,
           requestId: data.request_id,
         };
+        return;
       }
     }
   } catch (error) {
