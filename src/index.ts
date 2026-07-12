@@ -125,6 +125,8 @@ export interface CailSandboxClient {
 }
 
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -203,11 +205,19 @@ async function parseError(response: Response): Promise<CailSandboxError> {
 export function createCailSandboxClient(
   options: SandboxClientOptions,
 ): CailSandboxClient {
-  if (
-    !options.baseUrl.startsWith("https://") &&
-    !options.baseUrl.startsWith("http://localhost")
-  ) {
-    throw new Error("baseUrl must use HTTPS (or localhost)");
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(options.baseUrl);
+  } catch {
+    throw new Error("baseUrl must be an absolute URL");
+  }
+  const httpAllowed =
+    parsedBaseUrl.protocol === "http:" &&
+    LOOPBACK_HOSTNAMES.has(parsedBaseUrl.hostname);
+  if (parsedBaseUrl.protocol !== "https:" && !httpAllowed) {
+    throw new Error(
+      "baseUrl must use HTTPS (plain HTTP is allowed only for loopback hosts)",
+    );
   }
   if (!APP.test(options.app)) {
     throw new Error("app must be a stable lowercase slug");
@@ -281,7 +291,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       const response = await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/running`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/running`,
         {},
         credential,
         callOptions,
@@ -294,7 +304,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}`,
+        `/sandbox/v1/sandbox/${encodeId(id)}`,
         { method: "DELETE" },
         credential,
         callOptions,
@@ -306,7 +316,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       const response = await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/session`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/session`,
         { method: "POST" },
         credential,
         callOptions,
@@ -320,7 +330,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/session/${encodeURIComponent(sessionId)}`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/session/${encodeId(sessionId)}`,
         { method: "DELETE" },
         credential,
         callOptions,
@@ -333,7 +343,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       return call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/file/${encodePath(path)}`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/file/${encodePath(path)}`,
         {},
         credential,
         callOptions,
@@ -347,7 +357,7 @@ export function createCailSandboxClient(
       callOptions?: SandboxCallOptions,
     ) {
       await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/file/${encodePath(path)}`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/file/${encodePath(path)}`,
         { method: "PUT", body },
         credential,
         callOptions,
@@ -360,7 +370,7 @@ export function createCailSandboxClient(
       execOptions: SandboxExecOptions = {},
     ) {
       const response = await call(
-        `/sandbox/v1/sandbox/${encodeURIComponent(id)}/exec`,
+        `/sandbox/v1/sandbox/${encodeId(id)}/exec`,
         {
           method: "POST",
           headers: {
@@ -393,6 +403,29 @@ export function createCailSandboxClient(
       return response.json() as Promise<Record<string, unknown>>;
     },
   };
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "AbortError"
+  );
+}
+
+// The gateway contract declares sandbox/session ids as format: uuid; at
+// minimum reject anything that could alter the request path or headers.
+function encodeId(id: string) {
+  if (
+    id.length === 0 ||
+    id.includes("/") ||
+    id.includes("\\") ||
+    id.includes("..") ||
+    /[\u0000-\u001f\u007f]/.test(id)
+  ) {
+    throw new Error("id must be a sandbox-issued identifier");
+  }
+  return encodeURIComponent(id);
 }
 
 function encodePath(path: string) {
@@ -528,13 +561,24 @@ async function* parseCommandEvents(
     }
   } catch (error) {
     if (error instanceof CailSandboxError) throw error;
+    // Deliberate abort is not a framing failure — surface it unchanged.
+    if (isAbortError(error)) throw error;
     throw new CailSandboxError(
       "invalid_stream",
       "Command stream framing was invalid.",
       response.status,
     );
   } finally {
-    if (!streamDone) await reader.cancel();
+    if (!streamDone) {
+      // cancel() on an already-errored stream rejects with the stored error;
+      // swallowing it here keeps the exception from the catch block intact
+      // (a rejection escaping finally would override it).
+      try {
+        await reader.cancel();
+      } catch {
+        // Best-effort teardown only.
+      }
+    }
     reader.releaseLock();
   }
   if (!terminal) {

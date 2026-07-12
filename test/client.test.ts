@@ -248,6 +248,132 @@ test("rejects stream without exactly one terminal event", async () => {
   ).rejects.toThrow("without a terminal");
 });
 
+test("rejects plaintext baseUrl hosts that merely resemble localhost", () => {
+  expect(() =>
+    createCailSandboxClient({
+      baseUrl: "http://localhost.evil.com",
+      app: "kale",
+      fetchImpl: async () => new Response(),
+    }),
+  ).toThrow("HTTPS");
+});
+
+test("accepts HTTPS and loopback-only plaintext baseUrls", () => {
+  for (const baseUrl of [
+    "https://x",
+    "http://localhost:8787",
+    "http://127.0.0.1:8787",
+    "http://[::1]:8787",
+  ]) {
+    expect(() =>
+      createCailSandboxClient({
+        baseUrl,
+        app: "kale",
+        fetchImpl: async () => new Response(),
+      }),
+    ).not.toThrow();
+  }
+});
+
+test("rejects non-HTTP schemes and unparseable baseUrls", () => {
+  for (const baseUrl of ["ftp://x", "http://10.0.0.5", "not a url", ""]) {
+    expect(() =>
+      createCailSandboxClient({
+        baseUrl,
+        app: "kale",
+        fetchImpl: async () => new Response(),
+      }),
+    ).toThrow();
+  }
+});
+
+test("normalizes mid-stream transport errors to a typed invalid_stream", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('event: stdout\ndata: {"data":"eA=="}\n\n'));
+    },
+    pull(controller) {
+      controller.error(new Error("connection reset by peer"));
+    },
+  });
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+  });
+  const error = await (async () => {
+    for await (const event of await client.exec("box", "x", jwt)) void event;
+  })().catch((caught) => caught);
+  expect(error).toBeInstanceOf(CailSandboxError);
+  expect(error).toMatchObject({ code: "invalid_stream" });
+});
+
+test("surfaces a mid-stream abort as an abort, not invalid_stream", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('event: stdout\ndata: {"data":"eA=="}\n\n'));
+    },
+    pull(controller) {
+      controller.error(new DOMException("The operation was aborted.", "AbortError"));
+    },
+  });
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+  });
+  const error = await (async () => {
+    for await (const event of await client.exec("box", "x", jwt)) void event;
+  })().catch((caught) => caught);
+  expect(error).not.toBeInstanceOf(CailSandboxError);
+  expect(error).toMatchObject({ name: "AbortError" });
+});
+
+test("rejects path-shaped sandbox and session ids client-side", async () => {
+  let calls = 0;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response();
+    },
+  });
+  await expect(client.running("..", jwt)).rejects.toThrow("identifier");
+  await expect(client.destroy("a/../b", jwt)).rejects.toThrow("identifier");
+  await expect(client.readFile("box\\evil", "a.txt", jwt)).rejects.toThrow(
+    "identifier",
+  );
+  await expect(client.destroySession("box", "..", jwt)).rejects.toThrow(
+    "identifier",
+  );
+  await expect(client.createSession("id\nwith-control", jwt)).rejects.toThrow(
+    "identifier",
+  );
+  await expect(client.exec("", "x", jwt)).rejects.toThrow("identifier");
+  expect(calls).toBe(0);
+});
+
+test("accepts contract-shaped uuid ids", async () => {
+  let seen!: Request;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async (input, init) => {
+      seen = new Request(input, init);
+      return Response.json({ running: true, state: "active", expires_at: "later" });
+    },
+  });
+  await client.running("123e4567-e89b-42d3-a456-426614174000", jwt);
+  expect(seen.url).toBe(
+    "https://x/sandbox/v1/sandbox/123e4567-e89b-42d3-a456-426614174000/running",
+  );
+});
+
 test("rejects client-side path traversal", async () => {
   const client = createCailSandboxClient({
     baseUrl: "https://x",
