@@ -102,6 +102,11 @@ does not currently publish semantic release tags.
 The client and wire contract are tested; the bridge is not deployed. Durable
 ownership and expiry alarms are implemented but still need live Cloudflare
 verification, along with production authentication, egress policy, and billing.
+The current bridge PoC auth override is intentionally incompatible with this
+client's JWT/API-key credential headers: it expects a shared PoC bearer and a
+caller-supplied subject. Production consumers such as Workbench must remain
+disabled until the bridge verifies these client credentials and derives the
+subject at a trusted gateway/key-service boundary.
 
 An isolated personal-account deployment can run the destructive live contract
 check with throwaway credentials:
