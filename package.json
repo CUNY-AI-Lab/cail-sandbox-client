@@ -17,6 +17,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "test:live": "bun run build && bun run scripts/live-e2e.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",

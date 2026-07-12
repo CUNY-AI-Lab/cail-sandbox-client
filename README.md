@@ -102,3 +102,19 @@ does not currently publish semantic release tags.
 The client and wire contract are tested; the bridge is not deployed. Durable
 ownership and expiry alarms are implemented but still need live Cloudflare
 verification, along with production authentication, egress policy, and billing.
+
+An isolated personal-account deployment can run the destructive live contract
+check with throwaway credentials:
+
+```sh
+CAIL_SANDBOX_E2E_BASE_URL=https://... \
+CAIL_SANDBOX_E2E_AUTH_SECRET=... \
+bun run test:live
+```
+
+The script is locked to the personal-account E2E Worker hostname. It uses
+synthetic subjects and proves IDOR denial, complete OpenAPI equality, raw nested
+files, root/package-manager/public-internet access, raw terminal-event count,
+typed timeout/output terminal errors, idempotent cleanup, and retired
+create-attempt replay. Cleanup retries and verifies the lease is no longer
+addressable; the credential is never printed.
