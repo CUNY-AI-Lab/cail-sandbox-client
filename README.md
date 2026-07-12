@@ -90,7 +90,15 @@ The package ships the reviewed gateway OpenAPI 3.1.1 artifact under
 routes, raw-file methods, and shared error headers. Build output is committed so
 Git dependencies resolve without running a package build.
 
-This repository is still a local PoC. The client and wire contract are tested;
-the bridge is not deployed. Durable ownership and expiry alarms are implemented
-but still need live Cloudflare verification, along with production
-authentication, egress policy, and billing.
+Install a reviewed revision by its immutable full Git commit SHA:
+
+```sh
+bun add github:CUNY-AI-Lab/cail-sandbox-client#<full-40-character-commit-sha>
+```
+
+Do not pin `main` or a shortened SHA in a consumer lockfile. This repository
+does not currently publish semantic release tags.
+
+The client and wire contract are tested; the bridge is not deployed. Durable
+ownership and expiry alarms are implemented but still need live Cloudflare
+verification, along with production authentication, egress policy, and billing.
