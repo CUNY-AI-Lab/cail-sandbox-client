@@ -256,7 +256,6 @@ try {
 
   const createInput = { scopeKey: control(), idempotencyKey: control() };
   const created = await client.create(createInput, credential);
-  assert(created.quota, "create response omitted sandbox quota headers");
   lease = created;
   const replayed = await client.create(createInput, credential);
   assert.equal(replayed.id, lease.id);
@@ -328,12 +327,7 @@ try {
   assert.match(happy.output, /uid=0/);
   assert.match(happy.output, /apt=ok/);
   assert.match(happy.output, /net=/);
-  const metered = await client.running(lease, credential);
-  assert(metered.quota, "post-command running response omitted sandbox quota");
-  assert(
-    metered.quota.usedGibSeconds >= created.quota.usedGibSeconds,
-    "sandbox compute usage decreased after command execution",
-  );
+  await client.running(lease, credential);
   const read = await client.readFile(
     lease,
     operation,

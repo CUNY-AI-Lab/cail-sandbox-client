@@ -20,8 +20,8 @@ the response's `x-request-id` and `x-should-retry` values. WHATWG event-stream f
 buffer. It contains no Cloudflare SDK and no durable credential.
 Unknown event names are rejected. The first valid terminal event completes the
 iterator and cancels the transport. Callers should pass an `AbortSignal` for
-their own deadline. Use `onQuota` for admission-time quota headers and call
-`running()` after a command for a fresh remaining-budget reading.
+their own deadline. Sandbox usage is measured for admin accounting but the
+client exposes no cumulative Sandbox quota or remaining balance.
 
 ```ts
 import { createCailSandboxClient } from "@cuny-ai-lab/cail-sandbox-client";
@@ -88,7 +88,12 @@ await sandbox.exec(box, operation, "python main.py", credential, {
 The package ships the reviewed gateway OpenAPI 3.1.1 artifact under
 `contract/`. Tests pin its SHA-256, exact operation inventory, explicit-session
 routes, raw-file methods, and shared error headers. Build output is committed so
-Git dependencies resolve without running a package build.
+Git dependencies resolve without running a package build. `bun run
+check:gateway-contract` compares the artifact byte-for-byte with the canonical
+Gateway source when that checkout is present (override its path with
+`CAIL_GATEWAY_OPENAPI`) and always verifies the reviewed SHA-256 so standalone
+checks remain reproducible. The full `bun run check` gate performs that check
+before types, tests, and build.
 
 Install a reviewed revision by its immutable full Git commit SHA:
 

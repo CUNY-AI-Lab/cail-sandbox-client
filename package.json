@@ -16,11 +16,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun run check:gateway-contract && bun test",
+    "check": "bun run check:gateway-contract && bun run typecheck && bun test && bun run build",
+    "check:gateway-contract": "bun run scripts/check-gateway-contract.ts",
     "test:local:continuity": "bun run build && bun run scripts/local-continuity-e2e.ts",
     "test:live:continuity": "bun run build && bun run scripts/live-continuity-e2e.ts",
     "test:live": "bun run build && bun run scripts/live-e2e.ts",
-    "test:live:enforce": "bun run build && bun run scripts/live-enforcement-e2e.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
@@ -32,7 +33,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c4",
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#862067d3ac83d0cde456eb38d3a6bad6df0476e5",
     "eventsource-parser": "3.1.0"
   }
 }

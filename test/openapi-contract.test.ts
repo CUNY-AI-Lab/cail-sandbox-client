@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "3827243c8f4b6112069a3d1240c3093b99ce47f00a1f32f64c94a0dffd411c77";
+  "47a662a0073405e727a8dd17e70ed23e78f6eb6819551624934f4d9e8c99f784";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -13,6 +13,11 @@ test("pins the reviewed gateway OpenAPI artifact", () => {
   );
   expect(OPENAPI.openapi).toBe("3.1.1");
   expect(OPENAPI.info.version).toBe("0.1.0");
+  const gateway = new URL(
+    "../../cail-gateway/sandbox-bridge/src/openapi.json",
+    import.meta.url,
+  );
+  if (existsSync(gateway)) expect(bytes).toEqual(readFileSync(gateway));
 });
 
 test("thin client wraps every authenticated sandbox operation", () => {
@@ -102,12 +107,7 @@ test("production auth contract excludes personal keys and declares canonical RS2
   expect(JSON.stringify(OPENAPI)).not.toContain("x-cail-poc-auth-override");
 });
 
-test("sandbox quota contract exposes the complete bounded header family", () => {
-  expect(Object.keys(OPENAPI.components.headers).sort()).toEqual([
-    "SandboxQuotaLimit",
-    "SandboxQuotaRemaining",
-    "SandboxQuotaState",
-    "SandboxQuotaUnit",
-    "SandboxQuotaUsed",
-  ]);
+test("contract exposes no cumulative Sandbox quota or remaining balance", () => {
+  expect("headers" in OPENAPI.components).toBeFalse();
+  expect(JSON.stringify(OPENAPI)).not.toContain("Sandbox-Quota");
 });

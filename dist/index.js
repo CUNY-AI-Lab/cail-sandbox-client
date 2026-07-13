@@ -9,8 +9,7 @@ export class CailSandboxError extends Error {
     details;
     requestId;
     shouldRetry;
-    quota;
-    constructor(code, message, status, type = "unknown_error", param = null, details = {}, requestId = null, shouldRetry = null, quota = null) {
+    constructor(code, message, status, type = "unknown_error", param = null, details = {}, requestId = null, shouldRetry = null) {
         super(message);
         this.code = code;
         this.status = status;
@@ -19,7 +18,6 @@ export class CailSandboxError extends Error {
         this.details = details;
         this.requestId = requestId;
         this.shouldRetry = shouldRetry;
-        this.quota = quota;
         this.name = "CailSandboxError";
         Object.setPrototypeOf(this, CailSandboxError.prototype);
     }
@@ -36,47 +34,6 @@ function isRecord(value) {
 }
 function hasOnlyKeys(value, allowed) {
     return Object.keys(value).every((key) => allowed.includes(key));
-}
-const SANDBOX_QUOTA_HEADERS = [
-    "x-cail-sandbox-quota-limit",
-    "x-cail-sandbox-quota-used",
-    "x-cail-sandbox-quota-remaining",
-    "x-cail-sandbox-quota-unit",
-    "x-cail-sandbox-quota-state",
-];
-function nonnegativeHeaderInteger(value) {
-    if (value === null || !/^(?:0|[1-9]\d*)$/.test(value))
-        return null;
-    const parsed = Number(value);
-    return Number.isSafeInteger(parsed) ? parsed : null;
-}
-export function sandboxQuotaFromHeaders(headers) {
-    const values = SANDBOX_QUOTA_HEADERS.map((name) => headers.get(name));
-    if (values.every((value) => value === null))
-        return null;
-    if (values.some((value) => value === null)) {
-        throw new CailSandboxError("invalid_response", "Sandbox quota headers were incomplete.", 0);
-    }
-    const [limitText, usedText, remainingText, unit, state] = values;
-    const limitGibSeconds = nonnegativeHeaderInteger(limitText);
-    const usedGibSeconds = nonnegativeHeaderInteger(usedText);
-    const remainingGibSeconds = nonnegativeHeaderInteger(remainingText);
-    if (limitGibSeconds === null ||
-        usedGibSeconds === null ||
-        remainingGibSeconds === null ||
-        remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
-        unit !== "gib-seconds" ||
-        (state !== "ok" && state !== "exhausted") ||
-        (state === "exhausted" && remainingGibSeconds !== 0)) {
-        throw new CailSandboxError("invalid_response", "Sandbox quota headers were malformed.", 0);
-    }
-    return {
-        limitGibSeconds,
-        usedGibSeconds,
-        remainingGibSeconds,
-        unit,
-        state,
-    };
 }
 function credentialHeaders(credential) {
     const candidate = credential;
@@ -185,7 +142,6 @@ async function parseLifecycle(response) {
         expiresAt: body.expires_at,
         leaseCapability: body.lease_capability,
         leaseGeneration: body.lease_generation,
-        quota: sandboxQuotaFromHeaders(response.headers),
     };
 }
 async function parseOperation(response, operationId) {
@@ -207,7 +163,6 @@ async function parseOperation(response, operationId) {
         operationCapability: body.operation_capability,
         operationGeneration: body.operation_generation,
         expiresAt: body.expires_at,
-        quota: sandboxQuotaFromHeaders(response.headers),
     };
 }
 async function parseRunning(response) {
@@ -238,25 +193,17 @@ async function parseRunning(response) {
         incarnation: body.incarnation,
         restoredFromIncarnation: body.restored_from_incarnation,
         leaseGeneration: body.lease_generation,
-        quota: sandboxQuotaFromHeaders(response.headers),
     };
 }
 async function parseError(response) {
     const requestId = responseRequestId(response);
     const shouldRetry = responseShouldRetry(response);
-    let quota = null;
-    try {
-        quota = sandboxQuotaFromHeaders(response.headers);
-    }
-    catch {
-        // Quota metadata is ancillary on an error; preserve the finalized error.
-    }
     let body;
     try {
         body = await response.json();
     }
     catch {
-        return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry, quota);
+        return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
     }
     if (isRecord(body) && isRecord(body.error)) {
         const error = body.error;
@@ -268,10 +215,10 @@ async function parseError(response) {
             typeof error.type === "string" &&
             validParam &&
             validCail) {
-            return new CailSandboxError(error.code, error.message, response.status, error.type, error.param, cail === undefined ? {} : { ...cail }, requestId, shouldRetry, quota);
+            return new CailSandboxError(error.code, error.message, response.status, error.type, error.param, cail === undefined ? {} : { ...cail }, requestId, shouldRetry);
         }
     }
-    return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry, quota);
+    return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
 }
 export function createCailSandboxClient(options) {
     let parsedBaseUrl;
@@ -333,15 +280,6 @@ export function createCailSandboxClient(options) {
         }
         if (!response.ok)
             throw await parseError(response);
-        const quota = sandboxQuotaFromHeaders(response.headers);
-        if (quota && callOptions?.onQuota) {
-            try {
-                callOptions.onQuota(quota);
-            }
-            catch {
-                // Observation must never change an already-admitted remote operation.
-            }
-        }
         return response;
     };
     return {
