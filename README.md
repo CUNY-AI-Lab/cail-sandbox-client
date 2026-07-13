@@ -99,14 +99,14 @@ bun add github:CUNY-AI-Lab/cail-sandbox-client#<full-40-character-commit-sha>
 Do not pin `main` or a shortened SHA in a consumer lockfile. This repository
 does not currently publish semantic release tags.
 
-The client and wire contract are tested; the bridge is not deployed. Durable
-ownership and expiry alarms are implemented but still need live Cloudflare
-verification, along with production authentication, egress policy, and billing.
-The current bridge PoC auth override is intentionally incompatible with this
-client's JWT/API-key credential headers: it expects a shared PoC bearer and a
-caller-supplied subject. Production consumers such as Workbench must remain
-disabled until the bridge verifies these client credentials and derives the
-subject at a trusted gateway/key-service boundary.
+The client, wire contract, and production authentication boundary are tested;
+the institutional bridge is not deployed. The production entrypoint verifies
+CAIL session JWTs and resolves application-bound delegated keys through a
+key-service binding. Ordinary personal keys are ineligible during the bounded
+pilot. Durable ownership, expiry alarms, egress posture, metering, and
+container termination still need live Cloudflare verification. The separate
+personal-account E2E entrypoint retains its PoC bearer solely for destructive
+tests and is not a production ingress.
 
 An isolated personal-account deployment can run the destructive live contract
 check with throwaway credentials:

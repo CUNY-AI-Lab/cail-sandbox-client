@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "81c3301562665b9dbec954b8e303d6583a9ed845014a538c4caf9ca1f4201e45";
+  "785449e275047b8fca4cb4815c54ea962bb8d41f6c9c4145353ce98d578c1a36";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -85,4 +85,15 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   expect(OPENAPI.components.responses.Error.headers).toHaveProperty(
     "x-should-retry",
   );
+});
+
+test("production auth contract excludes personal keys and declares identity V2", () => {
+  expect(OPENAPI.components.securitySchemes).toHaveProperty("identityJwtV2");
+  expect(OPENAPI.components.securitySchemes.bearerAuth.description).toContain(
+    "delegated CAIL key",
+  );
+  expect(OPENAPI.components.securitySchemes.bearerAuth.description).toContain(
+    "personal keys",
+  );
+  expect(JSON.stringify(OPENAPI)).not.toContain("x-cail-poc-auth-override");
 });

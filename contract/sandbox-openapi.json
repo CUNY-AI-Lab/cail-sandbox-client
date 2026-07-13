@@ -7,8 +7,7 @@
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [{ "url": "/" }],
-  "security": [{ "bearerAuth": [] }, { "identityJwt": [] }],
-  "x-cail-poc-auth-override": "The local Worker entrypoint substitutes one shared PoC bearer plus X-CAIL-PoC-Subject. Production must implement the security schemes declared here through verified gateway/key-service authorization results.",
+  "security": [{ "bearerAuth": [] }, { "identityJwtV2": [] }, { "identityJwt": [] }],
   "paths": {
     "/health": {
       "get": {
@@ -164,11 +163,12 @@
       "SandboxQuotaState": { "schema": { "enum": ["ok", "exhausted"] } }
     },
     "securitySchemes": {
-      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Scoped personal or delegated CAIL credential. Query-string credentials are not accepted." },
-      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "Verified CAIL session JWT at the trusted boundary." }
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Application-bound delegated CAIL key. Ordinary personal keys and query-string credentials are not accepted during the bounded pilot." },
+      "identityJwtV2": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT-V2", "description": "Preferred RS256 CAIL session JWT with the cail:sandbox-bridge audience." },
+      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "Compatibility CAIL session JWT. Removed after the V1 migration window." }
     },
     "parameters": {
-      "App": { "name": "X-CAIL-App", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } },
+      "App": { "name": "X-CAIL-App", "in": "header", "required": true, "description": "Validated attribution for session credentials. For delegated keys, the key-service application binding is authoritative and must match this value.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } },
       "SandboxId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "SessionId": { "name": "sid", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "FilePath": { "name": "path", "in": "path", "required": true, "description": "Slash-preserving, percent-encoded path relative to /workspace", "schema": { "type": "string", "minLength": 1 } },
