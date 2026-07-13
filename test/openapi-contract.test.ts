@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "785449e275047b8fca4cb4815c54ea962bb8d41f6c9c4145353ce98d578c1a36";
+  "bab72afd8e07227d08c0d23345abfd971957f1ca4d6f483f8384af0a9c0e70e5";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -87,8 +87,12 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   );
 });
 
-test("production auth contract excludes personal keys and declares identity V2", () => {
-  expect(OPENAPI.components.securitySchemes).toHaveProperty("identityJwtV2");
+test("production auth contract excludes personal keys and declares canonical RS256 identity", () => {
+  expect(OPENAPI.components.securitySchemes).toHaveProperty("identityJwt");
+  expect(OPENAPI.components.securitySchemes).not.toHaveProperty("identityJwtV2");
+  expect(OPENAPI.components.securitySchemes.identityJwt.description).toContain(
+    "RS256 CAIL session JWT",
+  );
   expect(OPENAPI.components.securitySchemes.bearerAuth.description).toContain(
     "delegated CAIL key",
   );

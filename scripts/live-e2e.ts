@@ -49,6 +49,8 @@ const clientFor = (subject: string, clientApp = app) =>
 
 const client = clientFor(alice);
 const control = () => crypto.randomUUID();
+const delay = (milliseconds: number) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 let lease: SandboxLease | undefined;
 const operations: SandboxOperation[] = [];
 
@@ -136,6 +138,66 @@ async function destroyOperation(activeOperation: SandboxOperation) {
   }
 }
 
+async function waitForIdleSleep(idleStartedAt: number, timeoutMs = 150_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await client.running(lease!, credential);
+    if (!status.running) {
+      assert(
+        Date.now() - idleStartedAt >= 50_000,
+        "sandbox stopped materially before its configured 60-second idle window",
+      );
+      return status;
+    }
+    await delay(5_000);
+  }
+  assert.fail("sandbox did not sleep within the live E2E deadline");
+}
+
+async function waitForHealthy(timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = 0;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`, { redirect: "error" });
+      lastStatus = response.status;
+      if (response.status === 200) {
+        assert.deepEqual(await response.json(), {
+          status: "healthy",
+          service: "cail-sandbox-bridge",
+        });
+        return;
+      }
+    } catch {
+      lastStatus = 0;
+    }
+    await delay(2_000);
+  }
+  assert.fail(`sandbox E2E Worker did not become healthy; last status ${lastStatus}`);
+}
+
+async function waitForAuthenticatedOpenapi(timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = 0;
+  while (Date.now() < deadline) {
+    try {
+      return await client.openapi(credential);
+    } catch (error) {
+      if (
+        !(error instanceof CailSandboxError) ||
+        (error.status !== 401 && error.status !== 404)
+      ) {
+        throw error;
+      }
+      lastStatus = error.status;
+    }
+    await delay(2_000);
+  }
+  assert.fail(
+    `sandbox E2E authenticated contract did not become ready; last status ${lastStatus}`,
+  );
+}
+
 async function cleanup() {
   if (!lease) return;
   const errors: unknown[] = [];
@@ -174,12 +236,7 @@ async function cleanup() {
 
 let primaryError: unknown;
 try {
-  const health = await fetch(`${baseUrl}/health`, { redirect: "error" });
-  assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), {
-    status: "healthy",
-    service: "cail-sandbox-bridge",
-  });
+  await waitForHealthy();
 
   const unauthorized = await fetch(`${baseUrl}/sandbox/v1/openapi.json`, {
     headers: {
@@ -191,7 +248,7 @@ try {
   });
   assert.equal(unauthorized.status, 401);
 
-  const openapi = await client.openapi(credential);
+  const openapi = await waitForAuthenticatedOpenapi();
   const reviewedOpenapi = JSON.parse(
     readFileSync(new URL("../contract/sandbox-openapi.json", import.meta.url), "utf8"),
   );
@@ -296,6 +353,36 @@ try {
   await runRawCommand(rawOperation, "true");
   await destroyOperation(rawOperation);
   operations.splice(operations.indexOf(rawOperation), 1);
+
+  const beforeIdle = await client.running(lease, credential);
+  assert.equal(beforeIdle.running, true, "sandbox was not running before idle wait");
+  const slept = await waitForIdleSleep(Date.now());
+  assert.equal(
+    slept.incarnation,
+    placed.incarnation,
+    "stopped sandbox lost its last observed incarnation",
+  );
+  const wakeOperation = await client.createSession(
+    lease,
+    { operationId: control(), idempotencyKey: control() },
+    credential,
+  );
+  operations.push(wakeOperation);
+  const coldWorkspace = await runCommand(
+    wakeOperation,
+    "test ! -e /workspace/nested/data.bin",
+  );
+  assert.deepEqual(coldWorkspace.terminal, { type: "exit", exitCode: 0 });
+  const restarted = await client.running(lease, credential);
+  assert.equal(restarted.running, true);
+  assert(restarted.incarnation, "restarted sandbox omitted container incarnation");
+  assert.notEqual(
+    restarted.incarnation,
+    placed.incarnation,
+    "idle wake reused the previous container incarnation",
+  );
+  await destroyOperation(wakeOperation);
+  operations.splice(operations.indexOf(wakeOperation), 1);
 
   const timeoutOperation = await client.createSession(
     lease,

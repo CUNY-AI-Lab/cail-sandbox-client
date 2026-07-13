@@ -7,7 +7,7 @@
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [{ "url": "/" }],
-  "security": [{ "bearerAuth": [] }, { "identityJwtV2": [] }, { "identityJwt": [] }],
+  "security": [{ "bearerAuth": [] }, { "identityJwt": [] }],
   "paths": {
     "/health": {
       "get": {
@@ -164,8 +164,7 @@
     },
     "securitySchemes": {
       "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Application-bound delegated CAIL key. Ordinary personal keys and query-string credentials are not accepted during the bounded pilot." },
-      "identityJwtV2": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT-V2", "description": "Preferred RS256 CAIL session JWT with the cail:sandbox-bridge audience." },
-      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "Compatibility CAIL session JWT. Removed after the V1 migration window." }
+      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "RS256 CAIL session JWT with the cail:sandbox-bridge audience." }
     },
     "parameters": {
       "App": { "name": "X-CAIL-App", "in": "header", "required": true, "description": "Validated attribution for session credentials. For delegated keys, the key-service application binding is authoritative and must match this value.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } },
