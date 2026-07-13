@@ -572,9 +572,22 @@ export function createCailSandboxClient(
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...init,
       headers,
-      redirect: "error",
+      // Cloudflare Workers accepts `manual`, but rejects the standard
+      // `error` value before issuing the request. Keep redirects disabled by
+      // inspecting the response explicitly below.
+      redirect: "manual",
       signal: callOptions?.signal ?? init.signal,
     });
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      throw new CailSandboxError(
+        "unexpected_redirect",
+        "The CAIL sandbox gateway returned a redirect, which is never a valid sandbox response.",
+        response.status,
+      );
+    }
     if (!response.ok) throw await parseError(response);
     const quota = sandboxQuotaFromHeaders(response.headers);
     if (quota && callOptions?.onQuota) {

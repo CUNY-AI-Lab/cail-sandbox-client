@@ -56,10 +56,12 @@ const correlation: CailCorrelation = {
 
 test("owns exactly one CAIL credential and app header", async () => {
   let seen!: Request;
+  let redirect: RequestRedirect | undefined;
   const client = createCailSandboxClient({
     baseUrl: "https://x",
     app: "kale-workbench",
     fetchImpl: async (input, init) => {
+      redirect = init?.redirect;
       seen = new Request(input, init);
       return Response.json(leaseWire, { status: 201 });
     },
@@ -81,6 +83,22 @@ test("owns exactly one CAIL credential and app header", async () => {
     quota: null,
   });
   expect("call" in client).toBeFalse();
+  expect(redirect).toBe("manual");
+});
+
+test("rejects redirects without following or leaking credentials", async () => {
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale-workbench",
+    fetchImpl: async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://evil.example" },
+    }),
+  });
+  await expect(client.create(createInput, jwt)).rejects.toMatchObject({
+    code: "unexpected_redirect",
+    status: 302,
+  });
 });
 
 test("parses the all-or-none sandbox compute quota headers", async () => {
