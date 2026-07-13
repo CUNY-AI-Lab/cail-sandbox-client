@@ -27,7 +27,6 @@ export interface SandboxComputeQuota {
   usedGibSeconds: number;
   remainingGibSeconds: number;
   unit: "gib-seconds";
-  mode: "enforce";
   state: "ok" | "exhausted";
 }
 export interface SandboxLifecycle {
@@ -105,6 +104,7 @@ export interface SandboxRunning {
   state: SandboxState;
   expiresAt: string;
   incarnation: string | null;
+  restoredFromIncarnation: string | null;
   leaseGeneration: number;
   quota?: SandboxComputeQuota | null;
 }
@@ -186,7 +186,6 @@ const SANDBOX_QUOTA_HEADERS = [
   "x-cail-sandbox-quota-used",
   "x-cail-sandbox-quota-remaining",
   "x-cail-sandbox-quota-unit",
-  "x-cail-sandbox-quota-mode",
   "x-cail-sandbox-quota-state",
 ] as const;
 
@@ -208,7 +207,7 @@ export function sandboxQuotaFromHeaders(
       0,
     );
   }
-  const [limitText, usedText, remainingText, unit, mode, state] = values;
+  const [limitText, usedText, remainingText, unit, state] = values;
   const limitGibSeconds = nonnegativeHeaderInteger(limitText);
   const usedGibSeconds = nonnegativeHeaderInteger(usedText);
   const remainingGibSeconds = nonnegativeHeaderInteger(remainingText);
@@ -218,7 +217,6 @@ export function sandboxQuotaFromHeaders(
     remainingGibSeconds === null ||
     remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
     unit !== "gib-seconds" ||
-    mode !== "enforce" ||
     (state !== "ok" && state !== "exhausted") ||
     (state === "exhausted" && remainingGibSeconds !== 0)
   ) {
@@ -233,7 +231,6 @@ export function sandboxQuotaFromHeaders(
     usedGibSeconds,
     remainingGibSeconds,
     unit,
-    mode,
     state,
   };
 }
@@ -417,11 +414,20 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
   const message = "Sandbox status response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
-    !hasOnlyKeys(body, ["running", "state", "expires_at", "incarnation", "lease_generation"]) ||
+    !hasOnlyKeys(body, [
+      "running",
+      "state",
+      "expires_at",
+      "incarnation",
+      "restored_from_incarnation",
+      "lease_generation",
+    ]) ||
     typeof body.running !== "boolean" ||
     !["active", "destroying", "destroyed"].includes(String(body.state)) ||
     !isDateTime(body.expires_at) ||
     (body.incarnation !== null && typeof body.incarnation !== "string") ||
+    (body.restored_from_incarnation !== null &&
+      typeof body.restored_from_incarnation !== "string") ||
     !Number.isInteger(body.lease_generation) ||
     (body.lease_generation as number) < 1
   ) {
@@ -436,6 +442,8 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
     state: body.state as SandboxState,
     expiresAt: body.expires_at,
     incarnation: body.incarnation as string | null,
+    restoredFromIncarnation:
+      body.restored_from_incarnation as string | null,
     leaseGeneration: body.lease_generation as number,
     quota: sandboxQuotaFromHeaders(response.headers),
   };

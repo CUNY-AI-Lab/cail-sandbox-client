@@ -42,7 +42,6 @@ const SANDBOX_QUOTA_HEADERS = [
     "x-cail-sandbox-quota-used",
     "x-cail-sandbox-quota-remaining",
     "x-cail-sandbox-quota-unit",
-    "x-cail-sandbox-quota-mode",
     "x-cail-sandbox-quota-state",
 ];
 function nonnegativeHeaderInteger(value) {
@@ -58,7 +57,7 @@ export function sandboxQuotaFromHeaders(headers) {
     if (values.some((value) => value === null)) {
         throw new CailSandboxError("invalid_response", "Sandbox quota headers were incomplete.", 0);
     }
-    const [limitText, usedText, remainingText, unit, mode, state] = values;
+    const [limitText, usedText, remainingText, unit, state] = values;
     const limitGibSeconds = nonnegativeHeaderInteger(limitText);
     const usedGibSeconds = nonnegativeHeaderInteger(usedText);
     const remainingGibSeconds = nonnegativeHeaderInteger(remainingText);
@@ -67,7 +66,6 @@ export function sandboxQuotaFromHeaders(headers) {
         remainingGibSeconds === null ||
         remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
         unit !== "gib-seconds" ||
-        mode !== "enforce" ||
         (state !== "ok" && state !== "exhausted") ||
         (state === "exhausted" && remainingGibSeconds !== 0)) {
         throw new CailSandboxError("invalid_response", "Sandbox quota headers were malformed.", 0);
@@ -77,7 +75,6 @@ export function sandboxQuotaFromHeaders(headers) {
         usedGibSeconds,
         remainingGibSeconds,
         unit,
-        mode,
         state,
     };
 }
@@ -216,11 +213,20 @@ async function parseOperation(response, operationId) {
 async function parseRunning(response) {
     const message = "Sandbox status response was malformed.";
     const body = await parseSuccessRecord(response, message);
-    if (!hasOnlyKeys(body, ["running", "state", "expires_at", "incarnation", "lease_generation"]) ||
+    if (!hasOnlyKeys(body, [
+        "running",
+        "state",
+        "expires_at",
+        "incarnation",
+        "restored_from_incarnation",
+        "lease_generation",
+    ]) ||
         typeof body.running !== "boolean" ||
         !["active", "destroying", "destroyed"].includes(String(body.state)) ||
         !isDateTime(body.expires_at) ||
         (body.incarnation !== null && typeof body.incarnation !== "string") ||
+        (body.restored_from_incarnation !== null &&
+            typeof body.restored_from_incarnation !== "string") ||
         !Number.isInteger(body.lease_generation) ||
         body.lease_generation < 1) {
         throw new CailSandboxError("invalid_response", message, response.status);
@@ -230,6 +236,7 @@ async function parseRunning(response) {
         state: body.state,
         expiresAt: body.expires_at,
         incarnation: body.incarnation,
+        restoredFromIncarnation: body.restored_from_incarnation,
         leaseGeneration: body.lease_generation,
         quota: sandboxQuotaFromHeaders(response.headers),
     };

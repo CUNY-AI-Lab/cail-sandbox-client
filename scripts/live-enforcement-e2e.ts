@@ -116,7 +116,6 @@ try {
     credential,
   );
   aliceLease = created;
-  assert.equal(created.quota?.mode, "enforce");
   assert.equal(created.quota?.limitGibSeconds, 10);
 
   // Do not poll: status reads also reconcile the meter and must not become the
@@ -140,7 +139,6 @@ try {
     assert(error instanceof CailSandboxError);
     assert.equal(error.status, 429);
     assert.equal(error.code, "quota_exceeded");
-    assert.equal(error.quota?.mode, "enforce");
     assert.equal(error.quota?.state, "exhausted");
     assert.equal(error.quota?.remainingGibSeconds, 0);
   }
@@ -151,7 +149,6 @@ try {
     credential,
   );
   bobLease = createdBob;
-  assert.equal(createdBob.quota?.mode, "enforce");
   assert.equal(createdBob.quota?.state, "ok");
   await bobClient.destroy(createdBob, credential);
   bobLease = undefined;

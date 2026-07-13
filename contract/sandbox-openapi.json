@@ -36,7 +36,7 @@
         "parameters": [{ "$ref": "#/components/parameters/App" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSandboxRequest" } } } },
         "responses": {
-          "201": { "description": "Sandbox admitted and created", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxLifecycle" } } } },
+          "201": { "description": "Sandbox admitted and created", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxLifecycle" } } } },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
@@ -64,7 +64,7 @@
         "operationId": "isSandboxRunning",
         "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }],
         "responses": {
-          "200": { "description": "Current liveness and CAIL lifecycle", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Running" } } } },
+          "200": { "description": "Current liveness and CAIL lifecycle", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Running" } } } },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
           "404": { "$ref": "#/components/responses/Error" },
@@ -79,7 +79,7 @@
         "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }, { "$ref": "#/components/parameters/SessionIdHeader" }, { "$ref": "#/components/parameters/OperationId" }, { "$ref": "#/components/parameters/OperationCapability" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecRequest" } } } },
         "responses": {
-          "200": { "description": "WHATWG event stream containing base64 stdout/stderr and exactly one terminal exit/error event; quota headers are the pre-command admission snapshot", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "text/event-stream": { "schema": { "type": "string" } } } },
+          "200": { "description": "WHATWG event stream containing base64 stdout/stderr and exactly one terminal exit/error event; quota headers are the pre-command admission snapshot", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "text/event-stream": { "schema": { "type": "string" } } } },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
@@ -95,7 +95,7 @@
       "get": {
         "operationId": "readFile",
         "responses": {
-          "200": { "description": "Raw workspace-contained file bytes with the source MIME type preserved", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "*/*": { "schema": { "type": "string", "format": "binary" } } } },
+          "200": { "description": "Raw workspace-contained file bytes with the source MIME type preserved", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "*/*": { "schema": { "type": "string", "format": "binary" } } } },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
@@ -110,7 +110,7 @@
         "operationId": "writeFile",
         "requestBody": { "required": true, "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
         "responses": {
-          "200": { "description": "File written", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } },
+          "200": { "description": "File written", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
@@ -128,7 +128,7 @@
         "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSessionRequest" } } } },
         "responses": {
-          "201": { "description": "Explicit session and fenced operation acquired", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionLifecycle" } } } },
+          "201": { "description": "Explicit session and fenced operation acquired", "headers": { "X-CAIL-Sandbox-Quota-Limit": { "$ref": "#/components/headers/SandboxQuotaLimit" }, "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" }, "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" }, "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" }, "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionLifecycle" } } } },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" },
           "404": { "$ref": "#/components/responses/Error" },
@@ -159,7 +159,6 @@
       "SandboxQuotaUsed": { "description": "Conservatively accrued sandbox use in whole GiB-seconds", "schema": { "type": "integer", "minimum": 0 } },
       "SandboxQuotaRemaining": { "description": "Remaining sandbox allowance in whole GiB-seconds", "schema": { "type": "integer", "minimum": 0 } },
       "SandboxQuotaUnit": { "schema": { "const": "gib-seconds" } },
-      "SandboxQuotaMode": { "schema": { "const": "enforce" } },
       "SandboxQuotaState": { "schema": { "enum": ["ok", "exhausted"] } }
     },
     "securitySchemes": {
@@ -187,7 +186,6 @@
           "X-CAIL-Sandbox-Quota-Used": { "$ref": "#/components/headers/SandboxQuotaUsed" },
           "X-CAIL-Sandbox-Quota-Remaining": { "$ref": "#/components/headers/SandboxQuotaRemaining" },
           "X-CAIL-Sandbox-Quota-Unit": { "$ref": "#/components/headers/SandboxQuotaUnit" },
-          "X-CAIL-Sandbox-Quota-Mode": { "$ref": "#/components/headers/SandboxQuotaMode" },
           "X-CAIL-Sandbox-Quota-State": { "$ref": "#/components/headers/SandboxQuotaState" }
         },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
@@ -201,7 +199,7 @@
       "CreateSessionRequest": { "type": "object", "required": ["operation_id", "idempotency_key"], "properties": { "operation_id": { "$ref": "#/components/schemas/ControlValue" }, "idempotency_key": { "$ref": "#/components/schemas/ControlValue" } }, "additionalProperties": false },
       "SandboxLifecycle": { "type": "object", "required": ["id", "state", "expires_at", "lease_capability", "lease_generation"], "properties": { "id": { "type": "string", "format": "uuid" }, "state": { "const": "active" }, "expires_at": { "type": "string", "format": "date-time" }, "lease_capability": { "$ref": "#/components/schemas/ControlValue" }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
       "SessionLifecycle": { "type": "object", "required": ["id", "operation_capability", "operation_generation", "expires_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "operation_capability": { "$ref": "#/components/schemas/ControlValue" }, "operation_generation": { "type": "integer", "minimum": 1 }, "expires_at": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
-      "Running": { "type": "object", "required": ["running", "state", "expires_at", "incarnation", "lease_generation"], "properties": { "running": { "type": "boolean" }, "state": { "enum": ["active", "destroying", "destroyed"] }, "expires_at": { "type": "string", "format": "date-time" }, "incarnation": { "type": ["string", "null"] }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
+      "Running": { "type": "object", "required": ["running", "state", "expires_at", "incarnation", "restored_from_incarnation", "lease_generation"], "properties": { "running": { "type": "boolean" }, "state": { "enum": ["active", "destroying", "destroyed"] }, "expires_at": { "type": "string", "format": "date-time" }, "incarnation": { "type": ["string", "null"], "description": "Current physical container incarnation." }, "restored_from_incarnation": { "type": ["string", "null"], "description": "Physical incarnation that produced the successfully restored workspace backup, or null for a fresh workspace." }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
       "ExecRequest": { "type": "object", "required": ["command", "session_id"], "properties": { "command": { "type": "string", "minLength": 1, "maxLength": 16384 }, "session_id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
       "ErrorEnvelope": { "type": "object", "required": ["error"], "properties": { "error": { "$ref": "#/components/schemas/ErrorObject" } }, "additionalProperties": false },
       "ErrorObject": { "type": "object", "required": ["message", "type", "param", "code"], "properties": { "message": { "type": "string" }, "type": { "enum": ["invalid_request_error", "authentication_error", "permission_error", "conflict_error", "rate_limit_error", "server_error"] }, "param": { "type": ["string", "null"] }, "code": { "type": "string" }, "cail": { "type": "object", "additionalProperties": true } }, "additionalProperties": false }

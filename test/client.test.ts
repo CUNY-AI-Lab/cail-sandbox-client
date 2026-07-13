@@ -46,6 +46,7 @@ const runningWire = {
   state: "active",
   expires_at: "2026-07-12T12:00:00.000Z",
   incarnation: "placement-1",
+  restored_from_incarnation: null,
   lease_generation: 1,
 };
 const correlation: CailCorrelation = {
@@ -107,7 +108,6 @@ test("parses the all-or-none sandbox compute quota headers", async () => {
     "x-cail-sandbox-quota-used": "3",
     "x-cail-sandbox-quota-remaining": "7",
     "x-cail-sandbox-quota-unit": "gib-seconds",
-    "x-cail-sandbox-quota-mode": "enforce",
     "x-cail-sandbox-quota-state": "ok",
   };
   const client = createCailSandboxClient({
@@ -120,7 +120,6 @@ test("parses the all-or-none sandbox compute quota headers", async () => {
     usedGibSeconds: 3,
     remainingGibSeconds: 7,
     unit: "gib-seconds",
-    mode: "enforce",
     state: "ok",
   });
 
@@ -134,19 +133,6 @@ test("parses the all-or-none sandbox compute quota headers", async () => {
       }),
   });
   await expect(malformed.create(createInput, jwt)).rejects.toMatchObject({
-    code: "invalid_response",
-  });
-
-  const shadow = createCailSandboxClient({
-    baseUrl: "https://x",
-    app: "kale",
-    fetchImpl: async () =>
-      Response.json(leaseWire, {
-        status: 201,
-        headers: { ...headers, "x-cail-sandbox-quota-mode": "shadow" },
-      }),
-  });
-  await expect(shadow.create(createInput, jwt)).rejects.toMatchObject({
     code: "invalid_response",
   });
 
@@ -197,7 +183,6 @@ test("surfaces admission-time quota on cost-driving calls", async () => {
     "x-cail-sandbox-quota-used": "2",
     "x-cail-sandbox-quota-remaining": "8",
     "x-cail-sandbox-quota-unit": "gib-seconds",
-    "x-cail-sandbox-quota-mode": "enforce",
     "x-cail-sandbox-quota-state": "ok",
   };
   const observed: SandboxComputeQuota[] = [];
@@ -211,7 +196,7 @@ test("surfaces admission-time quota on cost-driving calls", async () => {
     onQuota: (quota) => observed.push(quota),
   })) void event;
   expect(observed).toHaveLength(1);
-  expect(observed[0]).toMatchObject({ remainingGibSeconds: 8, mode: "enforce" });
+  expect(observed[0]).toMatchObject({ remainingGibSeconds: 8, state: "ok" });
 });
 
 test("forwards cail-log correlation on typed sandbox operations", async () => {
@@ -226,6 +211,7 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
   });
   const result = await client.running(lease, jwt, { correlation });
   expect(result.state).toBe("destroying");
+  expect(result.restoredFromIncarnation).toBeNull();
   expect(seen.headers.get("x-cail-request-id")).toBe("req-123");
   expect(seen.headers.get("traceparent")).toBe(
     "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",

@@ -16,7 +16,6 @@ export interface SandboxComputeQuota {
     usedGibSeconds: number;
     remainingGibSeconds: number;
     unit: "gib-seconds";
-    mode: "enforce";
     state: "ok" | "exhausted";
 }
 export interface SandboxLifecycle {
@@ -85,6 +84,7 @@ export interface SandboxRunning {
     state: SandboxState;
     expiresAt: string;
     incarnation: string | null;
+    restoredFromIncarnation: string | null;
     leaseGeneration: number;
     quota?: SandboxComputeQuota | null;
 }
