@@ -142,3 +142,18 @@ checkout location. Cleanup is deadline-bounded, restores the pre-run Docker
 inventory, and fails the test if it cannot prove removal. Local restore uses
 Cloudflare's documented directory-replacement path; production still needs one
 disposable copy-on-write proof.
+
+The production-only continuity proof is deliberately locked to the disposable
+personal-account Worker and must run only with its dedicated R2 bucket and
+short-lived bucket-scoped credentials:
+
+```sh
+CAIL_SANDBOX_CONTINUITY_E2E_BASE_URL=https://cail-sandbox-bridge-continuity-e2e.veritas44.workers.dev/ \
+CAIL_SANDBOX_E2E_AUTH_SECRET=... \
+bun run test:live:continuity
+```
+
+It requires a new physical incarnation, exact restored bytes, a writable FUSE
+overlay, and idempotent cleanup. The surrounding deployment procedure must
+remove the Worker, container application, image, R2 bucket, Worker secrets, and
+temporary R2 credentials even when the client assertion fails.
