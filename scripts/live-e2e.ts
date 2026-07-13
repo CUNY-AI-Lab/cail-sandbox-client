@@ -207,7 +207,10 @@ try {
 
   const running = await client.running(lease, credential);
   assert.equal(running.running, true);
-  assert(running.incarnation, "running sandbox omitted container incarnation");
+  assert(
+    running.incarnation === null || running.incarnation.length > 0,
+    "running sandbox returned an invalid container incarnation",
+  );
 
   await expectCailError(
     clientFor(bob).running(lease, credential),
@@ -234,13 +237,9 @@ try {
     binary,
     credential,
   );
-  const read = await client.readFile(
-    lease,
-    operation,
-    "nested/data.bin",
-    credential,
-  );
-  assert.deepEqual(new Uint8Array(await read.arrayBuffer()), binary);
+  const placed = await client.running(lease, credential);
+  assert.equal(placed.running, true);
+  assert(placed.incarnation, "placed sandbox omitted container incarnation");
 
   const traversal = await fetch(
     `${baseUrl}/sandbox/v1/sandbox/${lease.id}/file/%252e%252e%252fetc%252fpasswd`,
@@ -264,10 +263,27 @@ try {
     operation,
     "set -eu; printf 'uid='; id -u; apt-get -qq install -y curl >/dev/null; echo apt=ok; printf 'net='; curl -fsS --max-time 3 https://registry.npmjs.org/-/ping",
   );
-  assert.deepEqual(happy.terminal, { type: "exit", exitCode: 0 });
+  assert.deepEqual(
+    happy.terminal,
+    { type: "exit", exitCode: 0 },
+    `root/package/egress probe failed; output=${JSON.stringify(happy.output)}`,
+  );
   assert.match(happy.output, /uid=0/);
   assert.match(happy.output, /apt=ok/);
   assert.match(happy.output, /net=/);
+  const metered = await client.running(lease, credential);
+  assert(metered.quota, "post-command running response omitted sandbox quota");
+  assert(
+    metered.quota.usedGibSeconds >= created.quota.usedGibSeconds,
+    "sandbox compute usage decreased after command execution",
+  );
+  const read = await client.readFile(
+    lease,
+    operation,
+    "nested/data.bin",
+    credential,
+  );
+  assert.deepEqual(new Uint8Array(await read.arrayBuffer()), binary);
   await destroyOperation(operation);
   operations.splice(operations.indexOf(operation), 1);
 
@@ -301,7 +317,7 @@ try {
   operations.push(outputOperation);
   const overflow = await runCommand(
     outputOperation,
-    "python3 -c 'import sys; sys.stdout.write(\"x\" * 70000)'",
+    "yes x | head -c 8192; yes y | head -c 8192 >&2",
   );
   assert.equal(overflow.terminal.type, "error");
   if (overflow.terminal.type === "error") {
