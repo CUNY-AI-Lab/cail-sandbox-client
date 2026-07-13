@@ -67,7 +67,7 @@ export function sandboxQuotaFromHeaders(headers) {
         remainingGibSeconds === null ||
         remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
         unit !== "gib-seconds" ||
-        (mode !== "shadow" && mode !== "admission" && mode !== "enforce") ||
+        mode !== "enforce" ||
         (state !== "ok" && state !== "exhausted") ||
         (state === "exhausted" && remainingGibSeconds !== 0)) {
         throw new CailSandboxError("invalid_response", "Sandbox quota headers were malformed.", 0);

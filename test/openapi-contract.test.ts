@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
 
 const CONTRACT_SHA256 =
-  "bab72afd8e07227d08c0d23345abfd971957f1ca4d6f483f8384af0a9c0e70e5";
+  "b615f296796b91d5570636013e897a5ae6771afff83b173b216ec6658458edc5";
 
 test("pins the reviewed gateway OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -100,4 +100,10 @@ test("production auth contract excludes personal keys and declares canonical RS2
     "personal keys",
   );
   expect(JSON.stringify(OPENAPI)).not.toContain("x-cail-poc-auth-override");
+});
+
+test("sandbox quota contract is enforce-only", () => {
+  expect(OPENAPI.components.headers.SandboxQuotaMode.schema).toEqual({
+    const: "enforce",
+  });
 });

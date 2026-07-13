@@ -27,7 +27,7 @@ export interface SandboxComputeQuota {
   usedGibSeconds: number;
   remainingGibSeconds: number;
   unit: "gib-seconds";
-  mode: "shadow" | "admission" | "enforce";
+  mode: "enforce";
   state: "ok" | "exhausted";
 }
 export interface SandboxLifecycle {
@@ -218,7 +218,7 @@ export function sandboxQuotaFromHeaders(
     remainingGibSeconds === null ||
     remainingGibSeconds !== Math.max(0, limitGibSeconds - usedGibSeconds) ||
     unit !== "gib-seconds" ||
-    (mode !== "shadow" && mode !== "admission" && mode !== "enforce") ||
+    mode !== "enforce" ||
     (state !== "ok" && state !== "exhausted") ||
     (state === "exhausted" && remainingGibSeconds !== 0)
   ) {

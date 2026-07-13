@@ -16,7 +16,7 @@ export interface SandboxComputeQuota {
     usedGibSeconds: number;
     remainingGibSeconds: number;
     unit: "gib-seconds";
-    mode: "shadow" | "admission" | "enforce";
+    mode: "enforce";
     state: "ok" | "exhausted";
 }
 export interface SandboxLifecycle {

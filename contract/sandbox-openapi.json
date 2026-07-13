@@ -159,7 +159,7 @@
       "SandboxQuotaUsed": { "description": "Conservatively accrued sandbox use in whole GiB-seconds", "schema": { "type": "integer", "minimum": 0 } },
       "SandboxQuotaRemaining": { "description": "Remaining sandbox allowance in whole GiB-seconds", "schema": { "type": "integer", "minimum": 0 } },
       "SandboxQuotaUnit": { "schema": { "const": "gib-seconds" } },
-      "SandboxQuotaMode": { "schema": { "enum": ["shadow", "admission", "enforce"] } },
+      "SandboxQuotaMode": { "schema": { "const": "enforce" } },
       "SandboxQuotaState": { "schema": { "enum": ["ok", "exhausted"] } }
     },
     "securitySchemes": {
