@@ -123,3 +123,22 @@ files, root/package-manager/public-internet access, raw terminal-event count,
 typed timeout/output terminal errors, idempotent cleanup, and retired
 create-attempt replay. Cleanup retries and verifies the lease is no longer
 addressable; the credential is never printed.
+
+With a sibling `cail-gateway` checkout, the deployment-free continuity proof
+starts the real bridge under `wrangler dev --local`, creates only local Durable
+Object/R2 state and an official Sandbox container, waits for idle snapshot and
+stop, then proves a new physical incarnation restores exact binary and
+dependency-shaped workspace state:
+
+```sh
+bun run test:local:continuity
+```
+
+The harness generates its PoC bearer and capability secret in memory, strips
+Cloudflare credentials from Wrangler's child environment, binds to loopback,
+and removes its local Wrangler state, container, and image. Set
+`CAIL_GATEWAY_SANDBOX_DIR` only when the gateway is not in the default sibling
+checkout location. Cleanup is deadline-bounded, restores the pre-run Docker
+inventory, and fails the test if it cannot prove removal. Local restore uses
+Cloudflare's documented directory-replacement path; production still needs one
+disposable copy-on-write proof.
