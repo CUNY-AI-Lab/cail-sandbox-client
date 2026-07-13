@@ -29,7 +29,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c429c05e42557143ddfc1ff8afaf5b7b1c1",
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c4",
     "eventsource-parser": "3.1.0"
   }
 }
