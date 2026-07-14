@@ -12,7 +12,8 @@ bounded `/sandbox/v1/*` HTTP contract.
 The client owns `X-CAIL-App` and exactly one CAIL credential, returns raw file
 `Response` objects without buffering, decodes base64 command output, requires
 exactly one terminal SSE event, and exposes nested CAIL errors as
-`CailSandboxError`. It uses `@cuny-ai-lab/cail-log` 1.0.0 for optional
+`CailSandboxError`. It pins reviewed `@cuny-ai-lab/cail-log` commit
+`4d747988966e657ef44081e68bc95bc758713604` for optional
 per-call `traceparent` and `X-CAIL-Request-Id` forwarding. Every lifecycle,
 file, OpenAPI, and exec call accepts a Web-standard `AbortSignal`; typed errors retain
 the response's `x-request-id` and `x-should-retry` values. WHATWG event-stream framing is delegated to the maintained

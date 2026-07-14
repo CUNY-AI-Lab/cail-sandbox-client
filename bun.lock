@@ -5,7 +5,7 @@
     "": {
       "name": "@cuny-ai-lab/cail-sandbox-client",
       "dependencies": {
-        "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#862067d3ac83d0cde456eb38d3a6bad6df0476e5",
+        "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#4d747988966e657ef44081e68bc95bc758713604",
         "eventsource-parser": "3.1.0",
       },
       "devDependencies": {
@@ -16,7 +16,7 @@
     },
   },
   "packages": {
-    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@github:CUNY-AI-Lab/cail-log#862067d", {}, "CUNY-AI-Lab-cail-log-862067d"],
+    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@github:CUNY-AI-Lab/cail-log#4d74798", {}, "CUNY-AI-Lab-cail-log-4d74798"],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
