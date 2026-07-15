@@ -54,13 +54,15 @@ export declare class CailSandboxError extends Error {
     readonly details: Record<string, unknown>;
     readonly requestId: string | null;
     readonly shouldRetry: boolean | null;
-    constructor(code: string, message: string, status: number, type?: string, param?: string | null, details?: Record<string, unknown>, requestId?: string | null, shouldRetry?: boolean | null);
+    readonly cause?: unknown | undefined;
+    constructor(code: string, message: string, status: number, type?: string, param?: string | null, details?: Record<string, unknown>, requestId?: string | null, shouldRetry?: boolean | null, cause?: unknown | undefined);
 }
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export interface SandboxClientOptions {
     baseUrl: string;
     app: string;
     fetchImpl?: FetchLike;
+    defaultTimeoutMs?: number;
 }
 export interface SandboxCallOptions {
     correlation?: CailCorrelation;

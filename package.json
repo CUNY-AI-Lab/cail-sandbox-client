@@ -8,7 +8,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./contract/sandbox-openapi.json": "./contract/sandbox-openapi.json"
   },
   "types": "./dist/index.d.ts",
   "files": ["contract", "dist", "src", "README.md"],
@@ -33,7 +34,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#4d747988966e657ef44081e68bc95bc758713604",
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#75e0dda3068794ae1543e1e2bb98c9c920bb848f",
     "eventsource-parser": "3.1.0"
   }
 }

@@ -1,5 +1,5 @@
 import { outboundCorrelationHeaders, } from "@cuny-ai-lab/cail-log";
-import { EventSourceParserStream } from "eventsource-parser/stream";
+import { EventSourceParserStream, ParseError } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
 export class CailSandboxError extends Error {
     code;
@@ -9,8 +9,9 @@ export class CailSandboxError extends Error {
     details;
     requestId;
     shouldRetry;
-    constructor(code, message, status, type = "unknown_error", param = null, details = {}, requestId = null, shouldRetry = null) {
-        super(message);
+    cause;
+    constructor(code, message, status, type = "unknown_error", param = null, details = {}, requestId = null, shouldRetry = null, cause) {
+        super(message, cause === undefined ? undefined : { cause });
         this.code = code;
         this.status = status;
         this.type = type;
@@ -18,6 +19,7 @@ export class CailSandboxError extends Error {
         this.details = details;
         this.requestId = requestId;
         this.shouldRetry = shouldRetry;
+        this.cause = cause;
         this.name = "CailSandboxError";
         Object.setPrototypeOf(this, CailSandboxError.prototype);
     }
@@ -27,6 +29,15 @@ const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_COMMAND_CHARS = 16_384;
 const MAX_OUTPUT_EVENT_BYTES = 1_048_576;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const ERROR_TYPES = new Set([
+    "invalid_request_error",
+    "authentication_error",
+    "permission_error",
+    "conflict_error",
+    "rate_limit_error",
+    "server_error",
+]);
 // WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 function isRecord(value) {
@@ -50,13 +61,17 @@ function credentialHeaders(credential) {
 }
 function requireStatus(response, expected) {
     if (response.status !== expected) {
-        throw new CailSandboxError("invalid_response", `Sandbox response used unexpected HTTP status ${response.status}.`, response.status);
+        throw responseError(response, "invalid_response", `Sandbox response used unexpected HTTP status ${response.status}.`);
     }
     return response;
 }
 function responseRequestId(response) {
-    return (response.headers.get("x-request-id") ??
-        response.headers.get("x-cail-request-id"));
+    const canonical = response.headers.get("x-cail-request-id");
+    const alias = response.headers.get("x-request-id");
+    if (canonical !== null && alias !== null && canonical !== alias) {
+        throw new CailSandboxError("invalid_response", "Sandbox response used conflicting request identifiers.", response.status, "unknown_error", null, {}, canonical, responseShouldRetry(response));
+    }
+    return canonical ?? alias;
 }
 function responseShouldRetry(response) {
     const value = response.headers.get("x-should-retry")?.trim().toLowerCase();
@@ -65,6 +80,9 @@ function responseShouldRetry(response) {
     if (value === "false")
         return false;
     return null;
+}
+function responseError(response, code, message, type = "unknown_error", cause) {
+    return new CailSandboxError(code, message, response.status, type, null, {}, responseRequestId(response), responseShouldRetry(response), cause);
 }
 function controlValue(value, name) {
     if (!CONTROL_VALUE.test(value)) {
@@ -93,10 +111,10 @@ async function parseSuccessRecord(response, message) {
         body = await response.json();
     }
     catch {
-        throw new CailSandboxError("invalid_response", message, response.status);
+        throw responseError(response, "invalid_response", message);
     }
     if (!isRecord(body)) {
-        throw new CailSandboxError("invalid_response", message, response.status);
+        throw responseError(response, "invalid_response", message);
     }
     return body;
 }
@@ -134,7 +152,7 @@ async function parseLifecycle(response) {
         !CONTROL_VALUE.test(body.lease_capability) ||
         !Number.isInteger(body.lease_generation) ||
         body.lease_generation < 1) {
-        throw new CailSandboxError("invalid_response", message, response.status);
+        throw responseError(response, "invalid_response", message);
     }
     return {
         id: body.id,
@@ -155,7 +173,7 @@ async function parseOperation(response, operationId) {
         !Number.isInteger(body.operation_generation) ||
         body.operation_generation < 1 ||
         !isDateTime(body.expires_at)) {
-        throw new CailSandboxError("invalid_response", message, response.status);
+        throw responseError(response, "invalid_response", message);
     }
     return {
         id: body.id,
@@ -184,7 +202,7 @@ async function parseRunning(response) {
             typeof body.restored_from_incarnation !== "string") ||
         !Number.isInteger(body.lease_generation) ||
         body.lease_generation < 1) {
-        throw new CailSandboxError("invalid_response", message, response.status);
+        throw responseError(response, "invalid_response", message);
     }
     return {
         running: body.running,
@@ -205,14 +223,18 @@ async function parseError(response) {
     catch {
         return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
     }
-    if (isRecord(body) && isRecord(body.error)) {
+    if (isRecord(body) &&
+        hasOnlyKeys(body, ["error"]) &&
+        isRecord(body.error)) {
         const error = body.error;
         const cail = error.cail;
         const validCail = cail === undefined || isRecord(cail);
         const validParam = error.param === null || typeof error.param === "string";
-        if (typeof error.code === "string" &&
+        if (hasOnlyKeys(error, ["message", "type", "param", "code", "cail"]) &&
+            typeof error.code === "string" &&
             typeof error.message === "string" &&
             typeof error.type === "string" &&
+            ERROR_TYPES.has(error.type) &&
             validParam &&
             validCail) {
             return new CailSandboxError(error.code, error.message, response.status, error.type, error.param, cail === undefined ? {} : { ...cail }, requestId, shouldRetry);
@@ -242,6 +264,12 @@ export function createCailSandboxClient(options) {
     if (!APP.test(options.app)) {
         throw new Error("app must be a stable lowercase slug");
     }
+    if (options.defaultTimeoutMs !== undefined &&
+        (!Number.isSafeInteger(options.defaultTimeoutMs) ||
+            options.defaultTimeoutMs < 1 ||
+            options.defaultTimeoutMs > MAX_TIMEOUT_MS)) {
+        throw new Error(`defaultTimeoutMs must be an integer between 1 and ${MAX_TIMEOUT_MS}`);
+    }
     const fetchImpl = options.fetchImpl ?? fetch;
     const basePath = parsedBaseUrl.pathname.replace(/\/+$/, "");
     const baseUrl = `${parsedBaseUrl.origin}${basePath === "/" ? "" : basePath}`;
@@ -265,6 +293,13 @@ export function createCailSandboxClient(options) {
                     : "Invalid CAIL correlation object.", 0);
             }
         }
+        const callerSignal = callOptions?.signal ?? init.signal;
+        const timeoutSignal = options.defaultTimeoutMs === undefined
+            ? undefined
+            : AbortSignal.timeout(options.defaultTimeoutMs);
+        const signal = callerSignal && timeoutSignal
+            ? AbortSignal.any([callerSignal, timeoutSignal])
+            : (callerSignal ?? timeoutSignal);
         const response = await fetchImpl(`${baseUrl}${path}`, {
             ...init,
             headers,
@@ -272,11 +307,11 @@ export function createCailSandboxClient(options) {
             // `error` value before issuing the request. Keep redirects disabled by
             // inspecting the response explicitly below.
             redirect: "manual",
-            signal: callOptions?.signal ?? init.signal,
+            signal,
         });
         if (response.type === "opaqueredirect" ||
             (response.status >= 300 && response.status < 400)) {
-            throw new CailSandboxError("unexpected_redirect", "The CAIL sandbox gateway returned a redirect, which is never a valid sandbox response.", response.status);
+            throw responseError(response, "unexpected_redirect", "The CAIL sandbox gateway returned a redirect, which is never a valid sandbox response.");
         }
         if (!response.ok)
             throw await parseError(response);
@@ -336,7 +371,7 @@ export function createCailSandboxClient(options) {
             requireStatus(response, 200);
             const result = await parseSuccessRecord(response, "Sandbox file-write response was malformed.");
             if (!hasOnlyKeys(result, ["ok"]) || result.ok !== true) {
-                throw new CailSandboxError("invalid_response", "Sandbox file-write response was malformed.", response.status);
+                throw responseError(response, "invalid_response", "Sandbox file-write response was malformed.");
             }
         },
         async exec(lease, operation, command, credential, execOptions = {}) {
@@ -368,7 +403,8 @@ export function createCailSandboxClient(options) {
 function isAbortError(error) {
     return (typeof error === "object" &&
         error !== null &&
-        error.name === "AbortError");
+        (error.name === "AbortError" ||
+            error.name === "TimeoutError"));
 }
 // The gateway contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
@@ -387,10 +423,11 @@ function encodePath(path) {
     return path.split("/").map(encodeURIComponent).join("/");
 }
 async function* parseCommandEvents(response) {
+    const invalidStream = (message, cause) => responseError(response, "invalid_stream", message, "unknown_error", cause);
     if (!response.body) {
-        throw new CailSandboxError("invalid_stream", "Command response had no body.", response.status);
+        throw invalidStream("Command response had no body.");
     }
-    let terminal = false;
+    let terminal = null;
     const events = response.body
         .pipeThrough(new TextDecoderStream())
         .pipeThrough(new EventSourceParserStream({
@@ -411,68 +448,64 @@ async function* parseCommandEvents(response) {
                 event !== "stderr" &&
                 event !== "exit" &&
                 event !== "error") {
-                throw new CailSandboxError("invalid_stream", "Command stream contained an unknown event type.", response.status);
+                throw invalidStream("Command stream contained an unknown event type.");
             }
             let parsed;
             try {
                 parsed = JSON.parse(message.data);
             }
             catch {
-                throw new CailSandboxError("invalid_stream", "Command stream contained invalid JSON.", response.status);
+                throw invalidStream("Command stream contained invalid JSON.");
             }
             if (!isRecord(parsed)) {
-                throw new CailSandboxError("invalid_stream", "Command stream event was malformed.", response.status);
+                throw invalidStream("Command stream event was malformed.");
             }
             const data = parsed;
             if (event === "stdout" || event === "stderr") {
                 if (terminal) {
-                    throw new CailSandboxError("invalid_stream", "Output followed the terminal event.", response.status);
+                    throw invalidStream("Output followed the terminal event.");
                 }
                 if (!hasOnlyKeys(data, ["data"]) || typeof data.data !== "string") {
-                    throw new CailSandboxError("invalid_stream", "Command output event was malformed.", response.status);
+                    throw invalidStream("Command output event was malformed.");
                 }
                 let bytes;
                 try {
                     bytes = Uint8Array.from(atob(data.data), (value) => value.charCodeAt(0));
                 }
                 catch {
-                    throw new CailSandboxError("invalid_stream", "Command output was not valid base64.", response.status);
+                    throw invalidStream("Command output was not valid base64.");
                 }
                 if (bytes.byteLength > MAX_OUTPUT_EVENT_BYTES) {
-                    throw new CailSandboxError("invalid_stream", "Command output event exceeded the CAIL limit.", response.status);
+                    throw invalidStream("Command output event exceeded the CAIL limit.");
                 }
                 yield { type: event, data: bytes };
             }
             else if (event === "exit") {
                 if (terminal) {
-                    throw new CailSandboxError("invalid_stream", "Command stream had multiple terminal events.", response.status);
+                    throw invalidStream("Command stream had multiple terminal events.");
                 }
                 if (!hasOnlyKeys(data, ["exit_code"]) ||
                     !Number.isInteger(data.exit_code)) {
-                    throw new CailSandboxError("invalid_stream", "Command exit event was malformed.", response.status);
+                    throw invalidStream("Command exit event was malformed.");
                 }
-                terminal = true;
-                yield { type: "exit", exitCode: data.exit_code };
-                return;
+                terminal = { type: "exit", exitCode: data.exit_code };
             }
             else {
                 if (terminal) {
-                    throw new CailSandboxError("invalid_stream", "Command stream had multiple terminal events.", response.status);
+                    throw invalidStream("Command stream had multiple terminal events.");
                 }
                 if (!hasOnlyKeys(data, ["code", "message", "request_id"]) ||
                     typeof data.code !== "string" ||
                     typeof data.message !== "string" ||
                     typeof data.request_id !== "string") {
-                    throw new CailSandboxError("invalid_stream", "Command error event was malformed.", response.status);
+                    throw invalidStream("Command error event was malformed.");
                 }
-                terminal = true;
-                yield {
+                terminal = {
                     type: "error",
                     code: data.code,
                     message: data.message,
                     requestId: data.request_id,
                 };
-                return;
             }
         }
     }
@@ -482,7 +515,10 @@ async function* parseCommandEvents(response) {
         // Deliberate abort is not a framing failure — surface it unchanged.
         if (isAbortError(error))
             throw error;
-        throw new CailSandboxError("invalid_stream", "Command stream framing was invalid.", response.status);
+        if (error instanceof ParseError) {
+            throw invalidStream("Command stream framing was invalid.", error);
+        }
+        throw responseError(response, "stream_transport_error", "Command stream transport failed.", "server_error", error);
     }
     finally {
         if (!streamDone) {
@@ -499,6 +535,7 @@ async function* parseCommandEvents(response) {
         reader.releaseLock();
     }
     if (!terminal) {
-        throw new CailSandboxError("invalid_stream", "Command stream ended without a terminal event.", response.status);
+        throw invalidStream("Command stream ended without a terminal event.");
     }
+    yield terminal;
 }

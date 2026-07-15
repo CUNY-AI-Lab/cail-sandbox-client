@@ -9,6 +9,7 @@ import {
   type SandboxLease,
   type SandboxOperation,
 } from "../dist/index.js";
+import { withAbortDeadline } from "./abort-deadline.js";
 
 const baseUrl = process.env.CAIL_SANDBOX_E2E_BASE_URL;
 const token = process.env.CAIL_SANDBOX_E2E_AUTH_SECRET;
@@ -45,6 +46,7 @@ const clientFor = (subject: string, clientApp = app) =>
     baseUrl,
     app: clientApp,
     fetchImpl: fetchFor(subject),
+    defaultTimeoutMs: 300_000,
   });
 
 const client = clientFor(alice);
@@ -115,6 +117,7 @@ async function runRawCommand(
       },
       body: JSON.stringify({ command, session_id: activeOperation.id }),
       redirect: "error",
+      signal: AbortSignal.timeout(190_000),
     },
   );
   assert.equal(response.status, 200);
@@ -129,7 +132,9 @@ async function runRawCommand(
 async function destroyOperation(activeOperation: SandboxOperation) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      await client.destroySession(lease!, activeOperation, credential);
+      await withAbortDeadline(30_000, "session cleanup", (signal) =>
+        client.destroySession(lease!, activeOperation, credential, { signal }),
+      );
       return;
     } catch (error) {
       if (error instanceof CailSandboxError && error.status === 404) return;
@@ -141,7 +146,9 @@ async function destroyOperation(activeOperation: SandboxOperation) {
 async function waitForIdleSleep(idleStartedAt: number, timeoutMs = 150_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const status = await client.running(lease!, credential);
+    const status = await client.running(lease!, credential, {
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!status.running) {
       assert(
         Date.now() - idleStartedAt >= 50_000,
@@ -159,7 +166,10 @@ async function waitForHealthy(timeoutMs = 90_000) {
   let lastStatus = 0;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/health`, { redirect: "error" });
+      const response = await fetch(`${baseUrl}/health`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
       lastStatus = response.status;
       if (response.status === 200) {
         assert.deepEqual(await response.json(), {
@@ -181,7 +191,9 @@ async function waitForAuthenticatedOpenapi(timeoutMs = 90_000) {
   let lastStatus = 0;
   while (Date.now() < deadline) {
     try {
-      return await client.openapi(credential);
+      return await client.openapi(credential, {
+        signal: AbortSignal.timeout(10_000),
+      });
     } catch (error) {
       if (
         !(error instanceof CailSandboxError) ||
@@ -212,7 +224,9 @@ async function cleanup() {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      await client.destroy(lease, credential);
+      await withAbortDeadline(30_000, "lease cleanup", (signal) =>
+        client.destroy(lease!, credential, { signal }),
+      );
       lastError = undefined;
       break;
     } catch (error) {
@@ -245,6 +259,7 @@ try {
       "x-cail-poc-subject": alice,
     },
     redirect: "error",
+    signal: AbortSignal.timeout(10_000),
   });
   assert.equal(unauthorized.status, 401);
 
@@ -310,6 +325,7 @@ try {
         "x-cail-operation-capability": operation.operationCapability,
       },
       redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     },
   );
   assert.equal(traversal.status, 400);

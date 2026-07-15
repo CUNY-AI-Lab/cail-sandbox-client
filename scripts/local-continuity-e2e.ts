@@ -12,6 +12,7 @@ import {
   type SandboxLease,
   type SandboxOperation,
 } from "../dist/index.js";
+import { withAbortDeadline } from "./abort-deadline.js";
 import {
   LOCAL_E2E_WORKER_NAME,
   LOCAL_E2E_WRANGLER_ARGS,
@@ -155,20 +156,6 @@ async function drain(stream: ReadableStream<Uint8Array>) {
 
 const delay = (milliseconds: number) => Bun.sleep(milliseconds);
 
-async function bounded<T>(promise: Promise<T>, milliseconds: number, label: string) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} exceeded ${milliseconds}ms`)), milliseconds);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 function setsEqual(left: Set<string>, right: Set<string>) {
   return left.size === right.size && [...left].every((value) => right.has(value));
 }
@@ -237,7 +224,10 @@ async function main() {
         throw new Error(`Local Wrangler exited before readiness (${server.exitCode}).\n${serverLogs.join("")}`);
       }
       try {
-        const response = await fetch(`${baseUrl}/health`, { redirect: "error" });
+        const response = await fetch(`${baseUrl}/health`, {
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
         if (response.status === 200) break;
       } catch {
         // The local Worker is still starting.
@@ -251,7 +241,12 @@ async function main() {
       headers.set("x-cail-poc-subject", subject);
       return fetch(input, { ...init, headers });
     };
-    const client = createCailSandboxClient({ baseUrl, app: "sandbox-local-e2e", fetchImpl: fetchForSubject });
+    const client = createCailSandboxClient({
+      baseUrl,
+      app: "sandbox-local-e2e",
+      fetchImpl: fetchForSubject,
+      defaultTimeoutMs: 300_000,
+    });
 
     async function runCommand(currentLease: SandboxLease, currentOperation: SandboxOperation, command: string) {
       let commandOutput = "";
@@ -285,10 +280,14 @@ async function main() {
     await client.destroySession(lease, operation, credential);
     operation = undefined;
     const idleDeadline = Date.now() + 120_000;
-    let stopped = await client.running(lease, credential);
+    let stopped = await client.running(lease, credential, {
+      signal: AbortSignal.timeout(10_000),
+    });
     while (stopped.running && Date.now() < idleDeadline) {
       await delay(1_000);
-      stopped = await client.running(lease, credential);
+      stopped = await client.running(lease, credential, {
+        signal: AbortSignal.timeout(10_000),
+      });
     }
     assert.equal(stopped.running, false, "Local sandbox did not snapshot and stop after its idle window");
     assert.equal(stopped.incarnation, before.incarnation);
@@ -321,24 +320,28 @@ async function main() {
   } finally {
     if (lease && operation) {
       try {
-        const client = createCailSandboxClient({ baseUrl, app: "sandbox-local-e2e", fetchImpl: async (input, init) => {
+        const client = createCailSandboxClient({ baseUrl, app: "sandbox-local-e2e", defaultTimeoutMs: 10_000, fetchImpl: async (input, init) => {
           const headers = new Headers(init?.headers);
           headers.set("x-cail-poc-subject", subject);
           return fetch(input, { ...init, headers });
         } });
-        await bounded(client.destroySession(lease, operation, credential), 10_000, "session cleanup");
+        await withAbortDeadline(10_000, "session cleanup", (signal) =>
+          client.destroySession(lease!, operation!, credential, { signal }),
+        );
       } catch (error) {
         cleanupErrors.push(error);
       }
     }
     if (lease) {
       try {
-        const client = createCailSandboxClient({ baseUrl, app: "sandbox-local-e2e", fetchImpl: async (input, init) => {
+        const client = createCailSandboxClient({ baseUrl, app: "sandbox-local-e2e", defaultTimeoutMs: 10_000, fetchImpl: async (input, init) => {
           const headers = new Headers(init?.headers);
           headers.set("x-cail-poc-subject", subject);
           return fetch(input, { ...init, headers });
         } });
-        await bounded(client.destroy(lease, credential), 10_000, "lease cleanup");
+        await withAbortDeadline(10_000, "lease cleanup", (signal) =>
+          client.destroy(lease!, credential, { signal }),
+        );
       } catch (error) {
         cleanupErrors.push(error);
       }

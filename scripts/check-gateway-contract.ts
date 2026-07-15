@@ -11,6 +11,10 @@ const local = readFileSync(localPath);
 const digest = createHash("sha256").update(local).digest("hex");
 const expected = "47a662a0073405e727a8dd17e70ed23e78f6eb6819551624934f4d9e8c99f784";
 
+if (process.env.CAIL_GATEWAY_OPENAPI && !existsSync(gatewayPath)) {
+  throw new Error(`Configured gateway OpenAPI does not exist: ${gatewayPath}`);
+}
+
 if (digest !== expected) {
   throw new Error(
     `Sandbox OpenAPI drift: ${localPath} no longer matches ${expected}`,

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import OPENAPI from "../contract/sandbox-openapi.json";
+import PACKAGE from "../package.json";
 
 const CONTRACT_SHA256 =
   "47a662a0073405e727a8dd17e70ed23e78f6eb6819551624934f4d9e8c99f784";
@@ -18,6 +19,30 @@ test("pins the reviewed gateway OpenAPI artifact", () => {
     import.meta.url,
   );
   if (existsSync(gateway)) expect(bytes).toEqual(readFileSync(gateway));
+});
+
+test("exports the reviewed OpenAPI artifact as a package subpath", () => {
+  expect(PACKAGE.exports["./contract/sandbox-openapi.json"]).toBe(
+    "./contract/sandbox-openapi.json",
+  );
+});
+
+test("an explicitly configured missing gateway contract fails closed", () => {
+  const result = Bun.spawnSync(
+    ["bun", "run", "scripts/check-gateway-contract.ts"],
+    {
+      env: {
+        ...process.env,
+        CAIL_GATEWAY_OPENAPI: "/definitely/missing/cail-openapi.json",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  expect(result.exitCode).not.toBe(0);
+  expect(new TextDecoder().decode(result.stderr)).toContain(
+    "Configured gateway OpenAPI does not exist",
+  );
 });
 
 test("thin client wraps every authenticated sandbox operation", () => {

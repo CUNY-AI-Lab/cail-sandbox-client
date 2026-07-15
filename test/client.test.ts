@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   CailSandboxError,
+  correlationFromHeaders,
   createCailSandboxClient,
   type CailCorrelation,
 } from "../src/index";
@@ -124,6 +125,27 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
   );
   expect(seen.headers.get("x-cail-sandbox-lease")).toBe(
     lease.leaseCapability,
+  );
+});
+
+test("adopts only the canonical cail-log request-id header", () => {
+  const canonical = "b5213d52-04cc-4b89-a5bd-f1db8884a34e";
+  const alias = "916fc59d-d79a-40d5-a822-4e096d85bd01";
+  expect(
+    correlationFromHeaders(
+      new Headers({
+        "x-cail-request-id": canonical,
+        "x-request-id": alias,
+      }),
+    ).request_id,
+  ).toBe(canonical);
+
+  const aliasOnly = correlationFromHeaders(
+    new Headers({ "x-request-id": alias }),
+  ).request_id;
+  expect(aliasOnly).not.toBe(alias);
+  expect(aliasOnly).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
 });
 
@@ -294,6 +316,38 @@ test("enforces operation-specific success statuses and write acknowledgements", 
   ).rejects.toMatchObject({ code: "invalid_response" });
 });
 
+test("preserves response metadata on unexpected statuses and malformed success bodies", async () => {
+  for (const response of [
+    Response.json(leaseWire, {
+      status: 202,
+      headers: {
+        "x-cail-request-id": "req-protocol",
+        "x-request-id": "req-protocol",
+        "x-should-retry": "false",
+      },
+    }),
+    new Response("not json", {
+      status: 201,
+      headers: {
+        "x-cail-request-id": "req-protocol",
+        "x-request-id": "req-protocol",
+        "x-should-retry": "false",
+      },
+    }),
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => response.clone(),
+    });
+    await expect(client.create(createInput, jwt)).rejects.toMatchObject({
+      code: "invalid_response",
+      requestId: "req-protocol",
+      shouldRetry: false,
+    });
+  }
+});
+
 test("rejects malformed scope and capability values before fetch", async () => {
   let calls = 0;
   const client = createCailSandboxClient({
@@ -305,7 +359,7 @@ test("rejects malformed scope and capability values before fetch", async () => {
     },
   });
   await expect(
-    client.create({ ...createInput, scopeKey: "conversation-1" }, jwt),
+    client.create({ ...createInput, scopeKey: "short" }, jwt),
   ).rejects.toThrow("high-entropy opaque value");
   await expect(
     client.exec(lease, operation, "x".repeat(16_385), jwt),
@@ -412,6 +466,90 @@ test("parses nested CAIL errors and response metadata", async () => {
   });
 });
 
+test("prefers canonical request ids and rejects conflicting aliases", async () => {
+  const errorBody = {
+    error: {
+      message: "No.",
+      type: "permission_error",
+      param: null,
+      code: "forbidden",
+    },
+  };
+  const canonical = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(errorBody, {
+        status: 403,
+        headers: { "x-cail-request-id": "canonical-only" },
+      }),
+  });
+  await expect(canonical.running(lease, jwt)).rejects.toMatchObject({
+    code: "forbidden",
+    requestId: "canonical-only",
+  });
+
+  const conflicting = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json(errorBody, {
+        status: 403,
+        headers: {
+          "x-cail-request-id": "canonical-id",
+          "x-request-id": "different-alias",
+          "x-should-retry": "false",
+        },
+      }),
+  });
+  await expect(conflicting.running(lease, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+    requestId: "canonical-id",
+    shouldRetry: false,
+  });
+});
+
+test("fails closed on nested errors outside the OpenAPI schema", async () => {
+  for (const error of [
+    {
+      message: "No.",
+      type: "future_error_type",
+      param: null,
+      code: "future_code",
+    },
+    {
+      message: "No.",
+      type: "server_error",
+      param: null,
+      code: "broken",
+      extra: true,
+    },
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () =>
+        Response.json(
+          { error },
+          {
+            status: 500,
+            headers: {
+              "x-cail-request-id": "req-schema",
+              "x-request-id": "req-schema",
+              "x-should-retry": "false",
+            },
+          },
+        ),
+    });
+    await expect(client.running(lease, jwt)).rejects.toMatchObject({
+      code: "unknown_error",
+      type: "unknown_error",
+      requestId: "req-schema",
+      shouldRetry: false,
+    });
+  }
+});
+
 test("rejects malformed nested envelopes but retains response metadata", async () => {
   const client = createCailSandboxClient({
     baseUrl: "https://x",
@@ -463,18 +601,16 @@ test("streams decoded output and one terminal event", async () => {
   expect(output[1]).toEqual({ type: "exit", exitCode: 0 });
 });
 
-test("a terminal SSE event completes without waiting for transport EOF", async () => {
+test("a terminal SSE event is withheld until EOF proves uniqueness", async () => {
   for (const terminal of [
     'event: exit\ndata: {"exit_code":0}\n\n',
     'event: error\ndata: {"code":"command_failed","message":"No.","request_id":"req-1"}\n\n',
   ]) {
-    let canceled = false;
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(terminal));
-      },
-      cancel() {
-        canceled = true;
+      start(activeController) {
+        controller = activeController;
+        activeController.enqueue(new TextEncoder().encode(terminal));
       },
     });
     const client = createCailSandboxClient({
@@ -482,13 +618,39 @@ test("a terminal SSE event completes without waiting for transport EOF", async (
       app: "kale",
       fetchImpl: async () => new Response(stream),
     });
-    const output = [];
-    for await (const event of await client.exec(lease, operation, "x", jwt)) {
-      output.push(event);
-    }
-    expect(output).toHaveLength(1);
-    expect(canceled).toBeTrue();
+    const events = await client.exec(lease, operation, "x", jwt);
+    const terminalResult = events.next();
+    expect(
+      await Promise.race([
+        terminalResult.then(() => "resolved"),
+        Bun.sleep(5).then(() => "pending"),
+      ]),
+    ).toBe("pending");
+    controller.close();
+    expect((await terminalResult).value).toMatchObject({
+      type: terminal.startsWith("event: exit") ? "exit" : "error",
+    });
+    expect((await events.next()).done).toBeTrue();
   }
+});
+
+test("rejects a second terminal event instead of accepting the first", async () => {
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      new Response(
+        'event: exit\ndata: {"exit_code":0}\n\n' +
+          'event: error\ndata: {"code":"late","message":"Late.","request_id":"req-late"}\n\n',
+      ),
+  });
+  await expect(
+    (async () => {
+      for await (const event of await client.exec(lease, operation, "x", jwt)) {
+        void event;
+      }
+    })(),
+  ).rejects.toThrow("multiple terminal events");
 });
 
 test("uses standard SSE framing across CRLF and split chunks", async () => {
@@ -661,27 +823,72 @@ test("normalizes a baseUrl path prefix without string-concatenation ambiguity", 
   expect(seen.url).toBe("https://x/api/sandbox/v1/openapi.json");
 });
 
-test("normalizes mid-stream transport errors to a typed invalid_stream", async () => {
+test("preserves mid-stream transport errors and response metadata", async () => {
   const encoder = new TextEncoder();
+  const transportError = new Error("connection reset by peer");
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(encoder.encode('event: stdout\ndata: {"data":"eA=="}\n\n'));
     },
     pull(controller) {
-      controller.error(new Error("connection reset by peer"));
+      controller.error(transportError);
     },
   });
   const client = createCailSandboxClient({
     baseUrl: "https://x",
     app: "kale",
     fetchImpl: async () =>
-      new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+      new Response(stream, {
+        headers: {
+          "content-type": "text/event-stream",
+          "x-cail-request-id": "req-stream",
+          "x-request-id": "req-stream",
+          "x-should-retry": "false",
+        },
+      }),
   });
   const error = await (async () => {
     for await (const event of await client.exec(lease, operation, "x", jwt)) void event;
   })().catch((caught) => caught);
   expect(error).toBeInstanceOf(CailSandboxError);
-  expect(error).toMatchObject({ code: "invalid_stream" });
+  expect(error).toMatchObject({
+    code: "stream_transport_error",
+    requestId: "req-stream",
+    shouldRetry: false,
+    cause: transportError,
+  });
+});
+
+test("applies an optional default timeout and rejects invalid configuration", async () => {
+  for (const defaultTimeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() =>
+      createCailSandboxClient({
+        baseUrl: "https://x",
+        app: "kale",
+        defaultTimeoutMs,
+      }),
+    ).toThrow("defaultTimeoutMs");
+  }
+
+  let seenSignal!: AbortSignal;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    defaultTimeoutMs: 5,
+    fetchImpl: async (_input, init) => {
+      seenSignal = init!.signal!;
+      return await new Promise<Response>((_resolve, reject) => {
+        seenSignal.addEventListener(
+          "abort",
+          () => reject(seenSignal.reason),
+          { once: true },
+        );
+      });
+    },
+  });
+  const error = await client.running(lease, jwt).catch((caught) => caught);
+  expect(seenSignal.aborted).toBeTrue();
+  expect(error).toMatchObject({ name: "TimeoutError" });
 });
 
 test("surfaces a mid-stream abort as an abort, not invalid_stream", async () => {
@@ -705,6 +912,33 @@ test("surfaces a mid-stream abort as an abort, not invalid_stream", async () => 
   })().catch((caught) => caught);
   expect(error).not.toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({ name: "AbortError" });
+});
+
+test("surfaces a mid-stream timeout as a timeout, not a transport error", async () => {
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    defaultTimeoutMs: 5,
+    fetchImpl: async (_input, init) => {
+      const signal = init!.signal!;
+      const stream = new ReadableStream({
+        start(controller) {
+          signal.addEventListener(
+            "abort",
+            () => controller.error(signal.reason),
+            { once: true },
+          );
+        },
+      });
+      return new Response(stream);
+    },
+  });
+  const error = await (async () => {
+    for await (const event of await client.exec(lease, operation, "x", jwt)) {
+      void event;
+    }
+  })().catch((caught) => caught);
+  expect(error).toMatchObject({ name: "TimeoutError" });
 });
 
 test("rejects path-shaped sandbox and session ids client-side", async () => {

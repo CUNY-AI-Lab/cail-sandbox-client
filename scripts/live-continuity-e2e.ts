@@ -9,6 +9,7 @@ import {
   type SandboxLease,
   type SandboxOperation,
 } from "../dist/index.js";
+import { withAbortDeadline } from "./abort-deadline.js";
 
 const baseUrlInput = process.env.CAIL_SANDBOX_CONTINUITY_E2E_BASE_URL;
 const token = process.env.CAIL_SANDBOX_E2E_AUTH_SECRET;
@@ -46,30 +47,17 @@ const client = createCailSandboxClient({
   baseUrl,
   app,
   fetchImpl: fetchForSubject,
+  defaultTimeoutMs: 300_000,
 });
-
-async function bounded<T>(promise: Promise<T>, milliseconds: number, label: string) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} exceeded ${milliseconds}ms`)),
-          milliseconds,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 async function waitForHealthy(timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/health`, { redirect: "error" });
+      const response = await fetch(`${baseUrl}/health`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
       if (response.status === 200) return;
     } catch {
       // The disposable Worker or its route is still propagating.
@@ -83,7 +71,9 @@ async function waitForContract(timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      return await client.openapi(credential);
+      return await client.openapi(credential, {
+        signal: AbortSignal.timeout(10_000),
+      });
     } catch (error) {
       if (
         !(error instanceof CailSandboxError) ||
@@ -120,7 +110,9 @@ async function runCommand(
 async function waitForIdleStop(lease: SandboxLease, startedAt: number) {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
-    const status = await client.running(lease, credential);
+    const status = await client.running(lease, credential, {
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!status.running) {
       assert(
         Date.now() - startedAt >= 50_000,
@@ -235,10 +227,11 @@ try {
 } finally {
   if (lease && operation) {
     try {
-      await bounded(
-        client.destroySession(lease, operation, credential),
+      await withAbortDeadline(
         20_000,
         "session cleanup",
+        (signal) =>
+          client.destroySession(lease!, operation!, credential, { signal }),
       );
     } catch (error) {
       cleanupErrors.push(error);
@@ -246,7 +239,9 @@ try {
   }
   if (lease) {
     try {
-      await bounded(client.destroy(lease, credential), 30_000, "lease cleanup");
+      await withAbortDeadline(30_000, "lease cleanup", (signal) =>
+        client.destroy(lease!, credential, { signal }),
+      );
     } catch (error) {
       cleanupErrors.push(error);
     }
