@@ -239,7 +239,11 @@ canonical gateway source when a sibling checkout is present. Set
 `CAIL_GATEWAY_OPENAPI` to compare another local file. An explicitly configured
 missing file fails closed. Without an explicit path or sibling gateway
 checkout, the local command verifies the pinned digest; CI always checks out
-the canonical gateway and requires byte-for-byte parity.
+the canonical gateway and requires byte-for-byte parity. Because the gateway
+repository is private, CI fails closed unless the repository Actions secret
+`CAIL_GATEWAY_READ_TOKEN` grants `contents:read` access to
+`CUNY-AI-Lab/cail-gateway`. Do not give this token write or administration
+permissions.
 
 Build output is committed under `dist/` so the package root resolves to built
 JavaScript and declarations. The package's `prepare` hook runs

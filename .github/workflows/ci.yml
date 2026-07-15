@@ -20,11 +20,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Require private gateway read access
+        env:
+          CAIL_GATEWAY_READ_TOKEN: ${{ secrets.CAIL_GATEWAY_READ_TOKEN }}
+        run: |
+          if [ -z "$CAIL_GATEWAY_READ_TOKEN" ]; then
+            echo "::error::CAIL_GATEWAY_READ_TOKEN must grant contents:read access to CUNY-AI-Lab/cail-gateway"
+            exit 1
+          fi
+
       - name: Check out canonical gateway contract
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: CUNY-AI-Lab/cail-gateway
           path: cail-gateway
+          token: ${{ secrets.CAIL_GATEWAY_READ_TOKEN }}
           persist-credentials: false
 
       - name: Set up Bun
