@@ -156,7 +156,8 @@ export interface CailSandboxClient {
 
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_COMMAND_CHARS = 16_384;
 const MAX_OUTPUT_EVENT_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -175,7 +176,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]) {
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+) {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
@@ -195,8 +199,17 @@ function credentialHeaders(credential: CailSandboxCredential) {
     : { authorization: `Bearer ${candidate.token}` };
 }
 
+function cancelResponseBody(response: Response) {
+  try {
+    void response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Best-effort transport teardown must not hide the protocol error.
+  }
+}
+
 function requireStatus(response: Response, expected: number) {
   if (response.status !== expected) {
+    cancelResponseBody(response);
     throw responseError(
       response,
       "invalid_response",
@@ -225,10 +238,16 @@ function responseRequestId(response: Response): string | null {
 }
 
 function responseShouldRetry(response: Response): boolean | null {
-  const value = response.headers.get("x-should-retry")?.trim().toLowerCase();
+  const value = response.headers.get("x-should-retry");
   if (value === "true") return true;
   if (value === "false") return false;
   return null;
+}
+
+function responseMediaType(response: Response): string | null {
+  const contentType = response.headers.get("content-type");
+  if (contentType === null) return null;
+  return contentType.split(";", 1)[0]?.trim().toLowerCase() || null;
 }
 
 function responseError(
@@ -285,6 +304,10 @@ async function parseSuccessRecord(
   response: Response,
   message: string,
 ): Promise<Record<string, unknown>> {
+  if (responseMediaType(response) !== "application/json") {
+    cancelResponseBody(response);
+    throw responseError(response, "invalid_response", message);
+  }
   let body: unknown;
   try {
     body = await response.json();
@@ -299,17 +322,41 @@ async function parseSuccessRecord(
 
 function isDateTime(value: unknown): value is string {
   if (typeof value !== "string") return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
-    value,
-  );
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
+      value,
+    );
   if (!match) return false;
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText] =
-    match;
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    hourText,
+    minuteText,
+    secondText,
+    ,
+    offsetHourText,
+    offsetMinuteText,
+  ] = match;
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const daysInMonth = [
+    31,
+    leap ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
   return (
     month >= 1 &&
     month <= 12 &&
@@ -327,7 +374,13 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
   const message = "Sandbox lifecycle response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
-    !hasOnlyKeys(body, ["id", "state", "expires_at", "lease_capability", "lease_generation"]) ||
+    !hasOnlyKeys(body, [
+      "id",
+      "state",
+      "expires_at",
+      "lease_capability",
+      "lease_generation",
+    ]) ||
     typeof body.id !== "string" ||
     !UUID.test(body.id) ||
     body.state !== "active" ||
@@ -355,7 +408,12 @@ async function parseOperation(
   const message = "Sandbox operation response was malformed.";
   const body = await parseSuccessRecord(response, message);
   if (
-    !hasOnlyKeys(body, ["id", "operation_capability", "operation_generation", "expires_at"]) ||
+    !hasOnlyKeys(body, [
+      "id",
+      "operation_capability",
+      "operation_generation",
+      "expires_at",
+    ]) ||
     typeof body.id !== "string" ||
     !UUID.test(body.id) ||
     typeof body.operation_capability !== "string" ||
@@ -403,15 +461,38 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
     state: body.state as SandboxState,
     expiresAt: body.expires_at,
     incarnation: body.incarnation as string | null,
-    restoredFromIncarnation:
-      body.restored_from_incarnation as string | null,
+    restoredFromIncarnation: body.restored_from_incarnation as string | null,
     leaseGeneration: body.lease_generation as number,
   };
 }
 
 async function parseError(response: Response): Promise<CailSandboxError> {
-  const requestId = responseRequestId(response);
+  let requestId: string | null;
+  try {
+    requestId = responseRequestId(response);
+  } catch (error) {
+    cancelResponseBody(response);
+    throw error;
+  }
   const shouldRetry = responseShouldRetry(response);
+  if (
+    response.headers.get("x-cail-request-id") === null ||
+    response.headers.get("x-request-id") === null ||
+    shouldRetry === null ||
+    responseMediaType(response) !== "application/json"
+  ) {
+    cancelResponseBody(response);
+    return new CailSandboxError(
+      "unknown_error",
+      `Sandbox request failed with HTTP ${response.status}.`,
+      response.status,
+      "unknown_error",
+      null,
+      {},
+      requestId,
+      shouldRetry,
+    );
+  }
   let body: unknown;
   try {
     body = await response.json();
@@ -428,11 +509,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
     );
   }
 
-  if (
-    isRecord(body) &&
-    hasOnlyKeys(body, ["error"]) &&
-    isRecord(body.error)
-  ) {
+  if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
     const error = body.error;
     const cail = error.cail;
     const validCail = cail === undefined || isRecord(cail);
@@ -494,7 +571,9 @@ export function createCailSandboxClient(
     parsedBaseUrl.search ||
     parsedBaseUrl.hash
   ) {
-    throw new Error("baseUrl must not contain credentials, a query, or a fragment");
+    throw new Error(
+      "baseUrl must not contain credentials, a query, or a fragment",
+    );
   }
   if (!APP.test(options.app)) {
     throw new Error("app must be a stable lowercase slug");
@@ -566,6 +645,7 @@ export function createCailSandboxClient(
       response.type === "opaqueredirect" ||
       (response.status >= 300 && response.status < 400)
     ) {
+      cancelResponseBody(response);
       throw responseError(
         response,
         "unexpected_redirect",
@@ -724,7 +804,9 @@ export function createCailSandboxClient(
       execOptions: SandboxExecOptions = {},
     ) {
       if (!command || command.length > MAX_COMMAND_CHARS) {
-        throw new Error(`command must contain 1-${MAX_COMMAND_CHARS} characters`);
+        throw new Error(
+          `command must contain 1-${MAX_COMMAND_CHARS} characters`,
+        );
       }
       const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/exec`,
@@ -787,6 +869,8 @@ function encodePath(path: string) {
   if (
     path.length === 0 ||
     path.startsWith("/") ||
+    path.includes("\0") ||
+    path.includes("%") ||
     path.split("/").some((part) => part === "..")
   ) {
     throw new Error("file path must be workspace-relative");
@@ -799,18 +883,22 @@ async function* parseCommandEvents(
 ): AsyncGenerator<CommandOutputEvent | CommandTerminalEvent> {
   const invalidStream = (message: string, cause?: unknown) =>
     responseError(response, "invalid_stream", message, "unknown_error", cause);
+  if (responseMediaType(response) !== "text/event-stream") {
+    cancelResponseBody(response);
+    throw invalidStream(
+      "Command response did not use the text/event-stream media type.",
+    );
+  }
   if (!response.body) {
     throw invalidStream("Command response had no body.");
   }
   let terminal: CommandTerminalEvent | null = null;
-  const events = response.body
-    .pipeThrough(new TextDecoderStream())
-    .pipeThrough(
-      new EventSourceParserStream({
-        maxBufferSize: 2 * 1024 * 1024,
-        onError: "terminate",
-      }),
-    );
+  const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(
+    new EventSourceParserStream({
+      maxBufferSize: 2 * 1024 * 1024,
+      onError: "terminate",
+    }),
+  );
   const reader = events.getReader();
   let streamDone = false;
   try {

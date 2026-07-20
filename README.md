@@ -9,6 +9,10 @@ gateway's matching Cloudflare Sandbox SDK. The SDK and image are both pinned to
 `0.12.3`. This package calls the bounded `/sandbox/v1/*` surface directly over
 HTTP without importing the Cloudflare SDK.
 
+[`CONTRACT.md`](CONTRACT.md) is the normative client-owned transport,
+ownership, error, SSE, timeout, retry, bounds, privacy, CI, and release
+contract. The vendored OpenAPI remains the gateway HTTP source of truth.
+
 ## Boundary and security model
 
 Use this client from a protected application backend. Sandbox lease and
@@ -43,11 +47,12 @@ internet access. No CAIL or provider credential is injected into the
 container.
 
 File paths are slash-preserving and workspace-relative. The client rejects
-empty or absolute paths and every literal `..` segment, then percent-encodes
-the remaining segments. The bridge performs the authoritative repeated-decode,
-NUL, absolute, and traversal checks. Paths and sandbox IDs are never
-authorization credentials. Root code in a sandbox can still create symlinks or
-modify any sandbox-local file.
+empty or absolute paths, NUL, percent-encoded input, and every literal `..`
+segment, then percent-encodes the remaining segments. These are inputs the
+gateway cannot represent safely under its repeated-decode policy. The bridge
+still performs the authoritative repeated-decode, NUL, absolute, and traversal
+checks. Paths and sandbox IDs are never authorization credentials. Root code in
+a sandbox can still create symlinks or modify any sandbox-local file.
 
 ## Request and failure behavior
 
@@ -68,16 +73,21 @@ to be idempotent. They need a fresh deadline and a verified result.
 
 Non-2xx CAIL responses become `CailSandboxError` instances with the nested
 `error.code`, `error.type`, `error.param`, `error.message`, and `error.cail`
-fields only when the envelope exactly matches the OpenAPI schema. A malformed
-or extended envelope fails closed as `unknown_error`. Response-derived errors
-also carry the canonical `X-CAIL-Request-Id` and parsed `x-should-retry` value
-when present. The legacy `x-request-id` alias is accepted only when it is absent
-or equal to the canonical value; conflicting values are an `invalid_response`.
-Unexpected success statuses, malformed success bodies, redirects, and command
-stream failures retain the same response metadata. Local validation errors
-occur before fetch. Fetch failures and deliberate aborts remain runtime errors.
-A mid-stream transport failure becomes `stream_transport_error` with the
-original error in `cause`; the remote command outcome may be ambiguous.
+fields only when the response is `application/json` and the envelope exactly
+matches the OpenAPI schema. A malformed, extended, or wrongly typed envelope
+fails closed as `unknown_error`. JSON success responses must also use
+`application/json`; exec must use `text/event-stream`. Response-derived errors
+carry the canonical `X-CAIL-Request-Id` and parsed `x-should-retry` value when
+present. A typed CAIL error requires both `X-CAIL-Request-Id` and its
+`x-request-id` response alias to be present and equal, plus an exact lowercase
+`x-should-retry` value. Missing or malformed metadata fails closed as
+`unknown_error`; conflicting request IDs are an `invalid_response`.
+Unexpected success statuses, media types, malformed success bodies, redirects,
+and command stream failures retain the same response metadata. Local
+validation errors occur before fetch. Fetch failures and deliberate aborts
+remain runtime errors. A mid-stream transport failure becomes
+`stream_transport_error` with the original error in `cause`; the remote command
+outcome may be ambiguous.
 
 Command output uses `eventsource-parser` for WHATWG SSE framing, including CRLF
 and split chunks, with a 2 MiB parser buffer. `stdout` and `stderr` payloads are
@@ -93,6 +103,16 @@ Breaking out of iteration cancels the underlying response stream.
 caller responsible for consuming or canceling its body. `writeFile()` sends
 `application/octet-stream` and succeeds only after the bridge returns an
 `{ "ok": true }` acknowledgement.
+
+One explicit operation admits exactly one exec. File writes hydrate its
+workspace before exec; file reads synchronize results after a terminal exec.
+Create a new operation after cleanup instead of attempting a second command.
+
+The active file and cumulative-output limits are gateway configuration and are
+not published by the current OpenAPI. The reviewed production-shaped source
+uses 8 MiB files and 1 MiB cumulative command output, but a live deployment may
+differ. Treat typed `413` and terminal output-limit errors as authoritative and
+bound application inputs and retained output independently.
 
 Sandbox usage is measured by the bridge for administrative accounting. The
 client exposes no cumulative Sandbox quota, spend cap, or remaining balance.
@@ -238,18 +258,22 @@ import the typed client from the package root.
 canonical gateway source when a sibling checkout is present. Set
 `CAIL_GATEWAY_OPENAPI` to compare another local file. An explicitly configured
 missing file fails closed. Without an explicit path or sibling gateway
-checkout, the local command verifies the pinned digest; CI always checks out
-the canonical gateway and requires byte-for-byte parity. Because the gateway
-repository is private, CI fails closed unless the repository Actions secret
-`CAIL_GATEWAY_READ_TOKEN` grants `contents:read` access to
-`CUNY-AI-Lab/cail-gateway`. Do not give this token write or administration
-permissions.
+checkout, the local command verifies the pinned digest. CI downloads only the
+canonical OpenAPI file and requires byte-for-byte parity; it does not expose a
+checkout of the private gateway repository to client-controlled hooks or
+tests. Because the gateway repository is private, CI fails closed unless the
+repository Actions secret `CAIL_GATEWAY_READ_TOKEN` grants `contents:read`
+access to `CUNY-AI-Lab/cail-gateway`. Do not give this token write or
+administration permissions. Fork pull requests do not receive the secret and
+must run the private parity gate in an authorized context.
 
 Build output is committed under `dist/` so the package root resolves to built
-JavaScript and declarations. The package's `prepare` hook runs
+JavaScript and declarations. The package records Bun `1.3.14`; CI uses that
+version with the frozen lockfile. The package's `prepare` hook runs
 `bun run build` during the relevant Git-install or packing lifecycle. A
 consumer therefore must not assume that installation skips the build merely
-because `dist/` is committed.
+because `dist/` is committed. Any future publish is restricted to private
+GitHub Packages and runs the full check plus committed-build parity first.
 
 Run the full local gate before pinning a revision:
 
@@ -260,10 +284,11 @@ bun pm pack --dry-run
 
 `bun run check` verifies the available gateway contract, types, unit and
 contract tests, and the build. The checked-in CI workflow installs from the
-frozen Bun lockfile, compares the canonical gateway contract, runs the full
-check, rejects committed `dist/` drift, dry-runs package creation, and scans the
-repository history for secrets. The live and local continuity scripts remain
-separate because they create external or Docker resources.
+frozen Bun lockfile, downloads and compares the canonical gateway contract,
+runs the full check, rejects committed `dist/` drift, dry-runs package
+creation, and scans the repository history for secrets. The live and local
+continuity scripts remain separate because they create external or Docker
+resources.
 
 Install a reviewed revision by its immutable full Git commit SHA:
 
@@ -272,16 +297,25 @@ bun add github:CUNY-AI-Lab/cail-sandbox-client#<full-40-character-commit-sha>
 ```
 
 Do not pin `main` or a shortened SHA in a consumer lockfile. This repository
-does not currently publish semantic release tags.
+has no Git tags and is not published to npmjs.com or GitHub Packages; `0.0.1`
+is package metadata, not a released compatibility claim.
+
+At the start of the 2026-07-20 review, the gateway and Kale Workbench both
+accepted client revision
+`3d90d1cdcf8953cf64822682f589099484734b5d`. A later client commit is not an
+accepted shared-primitive revision until both consumers separately review and
+pin it. The unchanged OpenAPI proves wire inventory parity, not full SSE,
+cancellation, or lifecycle semantic parity.
 
 ## Deployment and E2E boundaries
 
-The matching observation-only bridge and this client are implemented in the
-reviewed checkouts. This repository does not establish which Worker revision,
-bindings, limits, or secrets are active in an institutional environment. Before
-production use, obtain deployment authorization and verify live state through
-the gateway deployment records and runbook; package tests and disposable E2E
-runs do not provide either one.
+The reviewed gateway source remains observation-only and byte-matches this
+client's OpenAPI artifact. That does not make an unpinned client commit an
+accepted gateway revision, nor does this repository establish which Worker
+revision, bindings, limits, or secrets are active in an institutional
+environment. Before production use, obtain deployment authorization, align the
+consumer SHA pins, and verify live state through the gateway deployment records
+and runbook; package tests and disposable E2E runs do not provide those facts.
 
 The production entrypoint uses the CAIL identity verifier and a direct
 key-service binding for application-bound delegated keys. The separate

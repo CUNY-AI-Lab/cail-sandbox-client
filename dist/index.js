@@ -59,8 +59,17 @@ function credentialHeaders(credential) {
         ? { "x-cail-identity-jwt": candidate.token }
         : { authorization: `Bearer ${candidate.token}` };
 }
+function cancelResponseBody(response) {
+    try {
+        void response.body?.cancel().catch(() => undefined);
+    }
+    catch {
+        // Best-effort transport teardown must not hide the protocol error.
+    }
+}
 function requireStatus(response, expected) {
     if (response.status !== expected) {
+        cancelResponseBody(response);
         throw responseError(response, "invalid_response", `Sandbox response used unexpected HTTP status ${response.status}.`);
     }
     return response;
@@ -74,12 +83,18 @@ function responseRequestId(response) {
     return canonical ?? alias;
 }
 function responseShouldRetry(response) {
-    const value = response.headers.get("x-should-retry")?.trim().toLowerCase();
+    const value = response.headers.get("x-should-retry");
     if (value === "true")
         return true;
     if (value === "false")
         return false;
     return null;
+}
+function responseMediaType(response) {
+    const contentType = response.headers.get("content-type");
+    if (contentType === null)
+        return null;
+    return contentType.split(";", 1)[0]?.trim().toLowerCase() || null;
 }
 function responseError(response, code, message, type = "unknown_error", cause) {
     return new CailSandboxError(code, message, response.status, type, null, {}, responseRequestId(response), responseShouldRetry(response), cause);
@@ -106,6 +121,10 @@ function operationHeaders(lease, operation) {
     };
 }
 async function parseSuccessRecord(response, message) {
+    if (responseMediaType(response) !== "application/json") {
+        cancelResponseBody(response);
+        throw responseError(response, "invalid_response", message);
+    }
     let body;
     try {
         body = await response.json();
@@ -124,12 +143,25 @@ function isDateTime(value) {
     const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
     if (!match)
         return false;
-    const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText] = match;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText,] = match;
     const year = Number(yearText);
     const month = Number(monthText);
     const day = Number(dayText);
     const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    const daysInMonth = [
+        31,
+        leap ? 29 : 28,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     return (month >= 1 &&
         month <= 12 &&
         day >= 1 &&
@@ -143,7 +175,13 @@ function isDateTime(value) {
 async function parseLifecycle(response) {
     const message = "Sandbox lifecycle response was malformed.";
     const body = await parseSuccessRecord(response, message);
-    if (!hasOnlyKeys(body, ["id", "state", "expires_at", "lease_capability", "lease_generation"]) ||
+    if (!hasOnlyKeys(body, [
+        "id",
+        "state",
+        "expires_at",
+        "lease_capability",
+        "lease_generation",
+    ]) ||
         typeof body.id !== "string" ||
         !UUID.test(body.id) ||
         body.state !== "active" ||
@@ -165,7 +203,12 @@ async function parseLifecycle(response) {
 async function parseOperation(response, operationId) {
     const message = "Sandbox operation response was malformed.";
     const body = await parseSuccessRecord(response, message);
-    if (!hasOnlyKeys(body, ["id", "operation_capability", "operation_generation", "expires_at"]) ||
+    if (!hasOnlyKeys(body, [
+        "id",
+        "operation_capability",
+        "operation_generation",
+        "expires_at",
+    ]) ||
         typeof body.id !== "string" ||
         !UUID.test(body.id) ||
         typeof body.operation_capability !== "string" ||
@@ -214,8 +257,22 @@ async function parseRunning(response) {
     };
 }
 async function parseError(response) {
-    const requestId = responseRequestId(response);
+    let requestId;
+    try {
+        requestId = responseRequestId(response);
+    }
+    catch (error) {
+        cancelResponseBody(response);
+        throw error;
+    }
     const shouldRetry = responseShouldRetry(response);
+    if (response.headers.get("x-cail-request-id") === null ||
+        response.headers.get("x-request-id") === null ||
+        shouldRetry === null ||
+        responseMediaType(response) !== "application/json") {
+        cancelResponseBody(response);
+        return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
+    }
     let body;
     try {
         body = await response.json();
@@ -223,9 +280,7 @@ async function parseError(response) {
     catch {
         return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
     }
-    if (isRecord(body) &&
-        hasOnlyKeys(body, ["error"]) &&
-        isRecord(body.error)) {
+    if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
         const error = body.error;
         const cail = error.cail;
         const validCail = cail === undefined || isRecord(cail);
@@ -311,6 +366,7 @@ export function createCailSandboxClient(options) {
         });
         if (response.type === "opaqueredirect" ||
             (response.status >= 300 && response.status < 400)) {
+            cancelResponseBody(response);
             throw responseError(response, "unexpected_redirect", "The CAIL sandbox gateway returned a redirect, which is never a valid sandbox response.");
         }
         if (!response.ok)
@@ -417,6 +473,8 @@ function encodeId(id) {
 function encodePath(path) {
     if (path.length === 0 ||
         path.startsWith("/") ||
+        path.includes("\0") ||
+        path.includes("%") ||
         path.split("/").some((part) => part === "..")) {
         throw new Error("file path must be workspace-relative");
     }
@@ -424,13 +482,15 @@ function encodePath(path) {
 }
 async function* parseCommandEvents(response) {
     const invalidStream = (message, cause) => responseError(response, "invalid_stream", message, "unknown_error", cause);
+    if (responseMediaType(response) !== "text/event-stream") {
+        cancelResponseBody(response);
+        throw invalidStream("Command response did not use the text/event-stream media type.");
+    }
     if (!response.body) {
         throw invalidStream("Command response had no body.");
     }
     let terminal = null;
-    const events = response.body
-        .pipeThrough(new TextDecoderStream())
-        .pipeThrough(new EventSourceParserStream({
+    const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream({
         maxBufferSize: 2 * 1024 * 1024,
         onError: "terminate",
     }));
