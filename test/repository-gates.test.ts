@@ -1,14 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-test("CI checks the canonical gateway, committed build, package, and secrets", () => {
+test("CI checks the pinned contract, committed build, package, and secrets", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-  expect(workflow).toContain(
-    "api.github.com/repos/CUNY-AI-Lab/cail-gateway/contents/sandbox-bridge/src/openapi.json",
-  );
-  expect(workflow).toContain("CAIL_GATEWAY_OPENAPI");
-  expect(workflow).toContain("secrets.CAIL_GATEWAY_READ_TOKEN");
-  expect(workflow).toContain("must grant contents:read access");
+  expect(workflow).not.toContain("api.github.com/repos/CUNY-AI-Lab/cail-gateway");
+  expect(workflow).not.toContain("CAIL_GATEWAY_READ_TOKEN");
+  expect(workflow).not.toContain("CAIL_GATEWAY_OPENAPI");
   expect(workflow).not.toContain("repository: CUNY-AI-Lab/cail-gateway");
   expect(workflow).toContain("bun install --frozen-lockfile");
   expect(workflow).toContain("bun run check");

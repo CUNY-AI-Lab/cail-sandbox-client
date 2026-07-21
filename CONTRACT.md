@@ -199,11 +199,11 @@ The package root exports ESM JavaScript and declarations from committed
 `./contract/sandbox-openapi.json`. The package records Bun `1.3.14`; CI installs
 the frozen lockfile with that version, rebuilds, and rejects `dist/` drift.
 
-Private-contract CI uses a read-only token only to download the canonical
-gateway OpenAPI file. It does not expose a checkout of the private gateway
-repository to client hooks or tests. Fork pull requests do not receive the
-secret and therefore fail this private parity gate until run in an authorized
-context.
+Package-local CI verifies the vendored OpenAPI digest without downloading a
+mutable file or receiving access to the private gateway repository. A local
+integration checkout can compare byte-for-byte with a sibling gateway, or set
+`CAIL_GATEWAY_OPENAPI` to an explicit artifact. Cross-repository acceptance
+remains an integration release gate rather than a package CI dependency.
 
 This package has no Git tags and is not published to npmjs.com or GitHub
 Packages. `0.0.1` is metadata, not a released compatibility claim. The only

@@ -258,14 +258,12 @@ import the typed client from the package root.
 canonical gateway source when a sibling checkout is present. Set
 `CAIL_GATEWAY_OPENAPI` to compare another local file. An explicitly configured
 missing file fails closed. Without an explicit path or sibling gateway
-checkout, the local command verifies the pinned digest. CI downloads only the
-canonical OpenAPI file and requires byte-for-byte parity; it does not expose a
-checkout of the private gateway repository to client-controlled hooks or
-tests. Because the gateway repository is private, CI fails closed unless the
-repository Actions secret `CAIL_GATEWAY_READ_TOKEN` grants `contents:read`
-access to `CUNY-AI-Lab/cail-gateway`. Do not give this token write or
-administration permissions. Fork pull requests do not receive the secret and
-must run the private parity gate in an authorized context.
+checkout, the command verifies the pinned digest. Repository CI deliberately
+uses that standalone gate: package-local checks do not depend on a sibling
+private repository, cross-repository token, or mutable remote file. Gateway
+release integration separately compares the two checked-in artifacts and
+verifies lifecycle, SSE, cancellation, and ownership compatibility before a
+new client revision is accepted by consumers.
 
 Build output is committed under `dist/` so the package root resolves to built
 JavaScript and declarations. The package records Bun `1.3.14`; CI uses that
@@ -284,11 +282,10 @@ bun pm pack --dry-run
 
 `bun run check` verifies the available gateway contract, types, unit and
 contract tests, and the build. The checked-in CI workflow installs from the
-frozen Bun lockfile, downloads and compares the canonical gateway contract,
-runs the full check, rejects committed `dist/` drift, dry-runs package
-creation, and scans the repository history for secrets. The live and local
-continuity scripts remain separate because they create external or Docker
-resources.
+frozen Bun lockfile, verifies the pinned contract digest, runs the full check,
+rejects committed `dist/` drift, dry-runs package creation, and scans the
+repository history for secrets. The live and local continuity scripts remain
+separate because they create external or Docker resources.
 
 Install a reviewed revision by its immutable full Git commit SHA:
 
