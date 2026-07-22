@@ -1,6 +1,6 @@
-import { outboundCorrelationHeaders, } from "@cuny-ai-lab/cail-log";
+import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
 import { EventSourceParserStream, ParseError } from "eventsource-parser/stream";
-export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
+export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
 export class CailSandboxError extends Error {
     code;
     status;

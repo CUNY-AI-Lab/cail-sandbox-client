@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 test("CI checks the pinned contract, committed build, package, and secrets", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
@@ -23,9 +23,7 @@ test("package publishing is reproducible and restricted to GitHub Packages", () 
   expect(pkg.packageManager).toBe("bun@1.3.5");
   expect(pkg.files).toContain("CONTRACT.md");
   expect(pkg.files).toContain("vendor");
-  expect(pkg.dependencies?.["@cuny-ai-lab/cail-log"]).toBe(
-    "file:vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
-  );
+  expect(pkg.dependencies?.["@cuny-ai-lab/cail-log"]).toBeUndefined();
   expect(pkg.publishConfig).toEqual({
     access: "restricted",
     registry: "https://npm.pkg.github.com",
@@ -44,6 +42,9 @@ test("vendors the exact accepted cail-log source package", () => {
     contractSha256: string;
   };
   const tarball = readFileSync(`vendor/${provenance.tarball}`);
+  const vendoredPackage = JSON.parse(
+    readFileSync("vendor/cail-log/package.json", "utf8"),
+  ) as { name?: string; version?: string };
   expect(provenance.sourceCommit).toBe(
     "482b2a102fddac589d6db8a03cbea171df819872",
   );
@@ -53,4 +54,24 @@ test("vendors the exact accepted cail-log source package", () => {
   expect(createHash("sha256").update(tarball).digest("hex")).toBe(
     provenance.tarballSha256,
   );
+  expect(vendoredPackage).toMatchObject({
+    name: "@cuny-ai-lab/cail-log",
+    version: "0.6.0",
+  });
+  const extractedFiles = [
+    "package.json",
+    ...readdirSync("vendor/cail-log/dist").map((name) => `dist/${name}`),
+  ];
+  for (const file of extractedFiles) {
+    const archived = Bun.spawnSync([
+      "tar",
+      "-xOf",
+      `vendor/${provenance.tarball}`,
+      `package/${file}`,
+    ]);
+    expect(archived.exitCode).toBe(0);
+    expect(Buffer.from(archived.stdout)).toEqual(
+      readFileSync(`vendor/cail-log/${file}`),
+    );
+  }
 });

@@ -43,7 +43,6 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
     "eventsource-parser": "3.1.0"
   }
 }
