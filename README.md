@@ -112,11 +112,12 @@ bun pm pack --dry-run
 with a sibling service checkout when present, or verifies the pinned digest
 standalone. Set `CAIL_SANDBOX_SERVICE_OPENAPI` to check another explicit file.
 
-The package is not published. Consume only an exact reviewed source commit and
-override its `@cuny-ai-lab/cail-log` dependency to the accepted local/source
-revision `482b2a102fddac589d6db8a03cbea171df819872` until an explicit package
-release decision is made. Do not interpret metadata version `0.1.0` as registry
-availability.
+The package is not published. Its `cail-log` runtime dependency is the vendored
+0.6.0 tarball generated from accepted source revision
+`482b2a102fddac589d6db8a03cbea171df819872`, with SHA-256
+`7c638f58dd8e38736200050f00288cae2f9773011f00d8cf0ec22919bc52fa9e`.
+Consume only an exact reviewed Sandbox-client source commit. Do not interpret
+metadata version `0.1.0` as registry availability.
 
 This client creates no Cloudflare resources and contains no deployment command.
 Isolated service deployment and end-to-end resource cleanup belong to the

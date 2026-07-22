@@ -17,6 +17,7 @@
     "contract",
     "dist",
     "src",
+    "vendor",
     "CONTRACT.md",
     "README.md"
   ],
@@ -42,7 +43,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#75e0dda3068794ae1543e1e2bb98c9c920bb848f",
+    "@cuny-ai-lab/cail-log": "file:vendor/cuny-ai-lab-cail-log-0.6.0.tgz",
     "eventsource-parser": "3.1.0"
   }
 }
