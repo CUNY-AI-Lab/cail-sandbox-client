@@ -2,21 +2,21 @@ import { type CailCorrelation } from "@cuny-ai-lab/cail-log";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
 export type { CailCorrelation, CailHeadersLike } from "@cuny-ai-lab/cail-log";
 export type CailSandboxCredential = {
-    kind: "jwt" | "key";
+    kind: "jwt";
     token: string;
 };
-export type SandboxState = "active" | "destroying" | "destroyed";
+export type SandboxProfile = "offline-code";
+export type SandboxInstanceClass = "lite" | "basic" | "standard-1";
 export interface SandboxLease {
     id: string;
     leaseCapability: string;
     leaseGeneration: number;
 }
-export interface SandboxLifecycle {
-    id: string;
+export interface SandboxLifecycle extends SandboxLease {
     state: "active";
     expiresAt: string;
-    leaseCapability: string;
-    leaseGeneration: number;
+    profile: SandboxProfile;
+    instanceClass: SandboxInstanceClass;
 }
 export interface SandboxOperation {
     id: string;
@@ -28,6 +28,7 @@ export interface SandboxOperation {
 export interface CreateSandboxInput {
     scopeKey: string;
     idempotencyKey: string;
+    profile: SandboxProfile;
 }
 export interface CreateOperationInput {
     operationId: string;
@@ -71,16 +72,34 @@ export interface SandboxCallOptions {
 export type SandboxExecOptions = SandboxCallOptions;
 export interface SandboxRunning {
     running: boolean;
-    state: SandboxState;
+    state: "active";
     expiresAt: string;
-    incarnation: string | null;
-    restoredFromIncarnation: string | null;
     leaseGeneration: number;
+}
+export interface SandboxUsage {
+    period: string;
+    unit: "mib_milliseconds";
+    limit: number;
+    used: number;
+    reserved: number;
+    remaining: number;
+    activeLeases: 0 | 1;
+}
+export interface SandboxSettlement {
+    leaseId: string;
+    periodStart: string;
+    periodEnd: string;
+    unit: "mib_milliseconds";
+    quantity: number;
+    settledAt: string;
+    state: "settled";
 }
 export interface CailSandboxClient {
     create(input: CreateSandboxInput, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxLifecycle>;
     running(lease: SandboxLease, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxRunning>;
     destroy(lease: SandboxLease, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
+    usage(credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxUsage>;
+    settlement(leaseId: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxSettlement>;
     createSession(lease: SandboxLease, input: CreateOperationInput, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<SandboxOperation>;
     destroySession(lease: SandboxLease, operation: SandboxOperation, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
     readFile(lease: SandboxLease, operation: SandboxOperation, path: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Response>;

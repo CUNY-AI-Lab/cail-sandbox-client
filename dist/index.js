@@ -48,16 +48,14 @@ function hasOnlyKeys(value, allowed) {
 }
 function credentialHeaders(credential) {
     const candidate = credential;
-    if ((candidate.kind !== "jwt" && candidate.kind !== "key") ||
+    if (candidate.kind !== "jwt" ||
         typeof candidate.token !== "string" ||
         candidate.token.length === 0 ||
         candidate.token.length > 8_192 ||
         !/^[\x21-\x7e]+$/.test(candidate.token)) {
-        throw new Error("credential must contain a valid jwt or key token");
+        throw new Error("credential must contain a valid identity JWT");
     }
-    return candidate.kind === "jwt"
-        ? { "x-cail-identity-jwt": candidate.token }
-        : { authorization: `Bearer ${candidate.token}` };
+    return { "x-cail-identity-jwt": candidate.token };
 }
 function cancelResponseBody(response) {
     try {
@@ -172,6 +170,35 @@ function isDateTime(value) {
         (offsetHourText === undefined || Number(offsetHourText) <= 23) &&
         (offsetMinuteText === undefined || Number(offsetMinuteText) <= 59));
 }
+function isFullDate(value) {
+    if (typeof value !== "string")
+        return false;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match)
+        return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [
+        31,
+        leap ? 29 : 28,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1];
+}
+function isNonnegativeSafeInteger(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+}
 async function parseLifecycle(response) {
     const message = "Sandbox lifecycle response was malformed.";
     const body = await parseSuccessRecord(response, message);
@@ -181,6 +208,8 @@ async function parseLifecycle(response) {
         "expires_at",
         "lease_capability",
         "lease_generation",
+        "profile",
+        "instance_class",
     ]) ||
         typeof body.id !== "string" ||
         !UUID.test(body.id) ||
@@ -189,7 +218,9 @@ async function parseLifecycle(response) {
         typeof body.lease_capability !== "string" ||
         !CONTROL_VALUE.test(body.lease_capability) ||
         !Number.isInteger(body.lease_generation) ||
-        body.lease_generation < 1) {
+        body.lease_generation < 1 ||
+        body.profile !== "offline-code" ||
+        !["lite", "basic", "standard-1"].includes(String(body.instance_class))) {
         throw responseError(response, "invalid_response", message);
     }
     return {
@@ -198,6 +229,8 @@ async function parseLifecycle(response) {
         expiresAt: body.expires_at,
         leaseCapability: body.lease_capability,
         leaseGeneration: body.lease_generation,
+        profile: "offline-code",
+        instanceClass: body.instance_class,
     };
 }
 async function parseOperation(response, operationId) {
@@ -233,27 +266,86 @@ async function parseRunning(response) {
         "running",
         "state",
         "expires_at",
-        "incarnation",
-        "restored_from_incarnation",
         "lease_generation",
     ]) ||
         typeof body.running !== "boolean" ||
-        !["active", "destroying", "destroyed"].includes(String(body.state)) ||
+        body.state !== "active" ||
         !isDateTime(body.expires_at) ||
-        (body.incarnation !== null && typeof body.incarnation !== "string") ||
-        (body.restored_from_incarnation !== null &&
-            typeof body.restored_from_incarnation !== "string") ||
         !Number.isInteger(body.lease_generation) ||
         body.lease_generation < 1) {
         throw responseError(response, "invalid_response", message);
     }
     return {
         running: body.running,
-        state: body.state,
+        state: "active",
         expiresAt: body.expires_at,
-        incarnation: body.incarnation,
-        restoredFromIncarnation: body.restored_from_incarnation,
         leaseGeneration: body.lease_generation,
+    };
+}
+async function parseUsage(response) {
+    const message = "Sandbox usage response was malformed.";
+    const body = await parseSuccessRecord(response, message);
+    if (!hasOnlyKeys(body, [
+        "period",
+        "unit",
+        "limit",
+        "used",
+        "reserved",
+        "remaining",
+        "active_leases",
+    ]) ||
+        !isFullDate(body.period) ||
+        body.unit !== "mib_milliseconds" ||
+        !isNonnegativeSafeInteger(body.limit) ||
+        !isNonnegativeSafeInteger(body.used) ||
+        !isNonnegativeSafeInteger(body.reserved) ||
+        !isNonnegativeSafeInteger(body.remaining) ||
+        (body.active_leases !== 0 && body.active_leases !== 1) ||
+        BigInt(body.remaining) !==
+            (BigInt(body.limit) > BigInt(body.used) + BigInt(body.reserved)
+                ? BigInt(body.limit) - BigInt(body.used) - BigInt(body.reserved)
+                : 0n)) {
+        throw responseError(response, "invalid_response", message);
+    }
+    return {
+        period: body.period,
+        unit: "mib_milliseconds",
+        limit: body.limit,
+        used: body.used,
+        reserved: body.reserved,
+        remaining: body.remaining,
+        activeLeases: body.active_leases,
+    };
+}
+async function parseSettlement(response, expectedLeaseId) {
+    const message = "Sandbox settlement response was malformed.";
+    const body = await parseSuccessRecord(response, message);
+    if (!hasOnlyKeys(body, [
+        "lease_id",
+        "period_start",
+        "period_end",
+        "unit",
+        "quantity",
+        "settled_at",
+        "state",
+    ]) ||
+        body.lease_id !== expectedLeaseId ||
+        !isDateTime(body.period_start) ||
+        !isDateTime(body.period_end) ||
+        body.unit !== "mib_milliseconds" ||
+        !isNonnegativeSafeInteger(body.quantity) ||
+        !isDateTime(body.settled_at) ||
+        body.state !== "settled") {
+        throw responseError(response, "invalid_response", message);
+    }
+    return {
+        leaseId: body.lease_id,
+        periodStart: body.period_start,
+        periodEnd: body.period_end,
+        unit: "mib_milliseconds",
+        quantity: body.quantity,
+        settledAt: body.settled_at,
+        state: "settled",
     };
 }
 async function parseError(response) {
@@ -367,7 +459,7 @@ export function createCailSandboxClient(options) {
         if (response.type === "opaqueredirect" ||
             (response.status >= 300 && response.status < 400)) {
             cancelResponseBody(response);
-            throw responseError(response, "unexpected_redirect", "The CAIL sandbox gateway returned a redirect, which is never a valid sandbox response.");
+            throw responseError(response, "unexpected_redirect", "The CAIL Sandbox service returned a redirect, which is never a valid sandbox response.");
         }
         if (!response.ok)
             throw await parseError(response);
@@ -375,12 +467,16 @@ export function createCailSandboxClient(options) {
     };
     return {
         async create(input, credential, callOptions) {
+            if (input.profile !== "offline-code") {
+                throw new Error('profile must be "offline-code"');
+            }
             const response = await call("/sandbox/v1/sandbox", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
                     scope_key: controlValue(input.scopeKey, "scopeKey"),
                     idempotency_key: controlValue(input.idempotencyKey, "idempotencyKey"),
+                    profile: input.profile,
                 }),
             }, credential, callOptions);
             return parseLifecycle(requireStatus(response, 201));
@@ -392,6 +488,15 @@ export function createCailSandboxClient(options) {
         async destroy(lease, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}`, { method: "DELETE", headers: leaseHeaders(lease) }, credential, callOptions);
             requireStatus(response, 204);
+        },
+        async usage(credential, callOptions) {
+            const response = await call("/sandbox/v1/usage", {}, credential, callOptions);
+            return parseUsage(requireStatus(response, 200));
+        },
+        async settlement(leaseId, credential, callOptions) {
+            const validatedLeaseId = encodeId(leaseId);
+            const response = await call(`/sandbox/v1/usage/${validatedLeaseId}`, {}, credential, callOptions);
+            return parseSettlement(requireStatus(response, 200), leaseId);
         },
         async createSession(lease, input, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/session`, {
@@ -462,7 +567,7 @@ function isAbortError(error) {
         (error.name === "AbortError" ||
             error.name === "TimeoutError"));
 }
-// The gateway contract declares sandbox/session ids as format: uuid; at
+// The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
 function encodeId(id) {
     if (!UUID.test(id)) {

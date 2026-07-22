@@ -10,6 +10,7 @@ const jwt = { kind: "jwt" as const, token: "session-token" };
 const createInput = {
   scopeKey: "scope-key-000000000000000000000000000001",
   idempotencyKey: "create-key-0000000000000000000000000001",
+  profile: "offline-code" as const,
 };
 const lease = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -33,6 +34,8 @@ const leaseWire = {
   expires_at: "2026-07-12T12:00:00.000Z",
   lease_capability: lease.leaseCapability,
   lease_generation: lease.leaseGeneration,
+  profile: "offline-code",
+  instance_class: "lite",
 };
 const operationWire = {
   id: operation.id,
@@ -44,8 +47,6 @@ const runningWire = {
   running: true,
   state: "active",
   expires_at: "2026-07-12T12:00:00.000Z",
-  incarnation: "placement-1",
-  restored_from_incarnation: null,
   lease_generation: 1,
 };
 const correlation: CailCorrelation = {
@@ -80,6 +81,7 @@ test("owns exactly one CAIL credential and app header", async () => {
   expect(await seen.json()).toEqual({
     scope_key: createInput.scopeKey,
     idempotency_key: createInput.idempotencyKey,
+    profile: "offline-code",
   });
   expect(created).toEqual({
     id: lease.id,
@@ -87,6 +89,8 @@ test("owns exactly one CAIL credential and app header", async () => {
     expiresAt: "2026-07-12T12:00:00.000Z",
     leaseCapability: lease.leaseCapability,
     leaseGeneration: 1,
+    profile: "offline-code",
+    instanceClass: "lite",
   });
   expect("call" in client).toBeFalse();
   expect(redirect).toBe("manual");
@@ -115,12 +119,11 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
     app: "kale",
     fetchImpl: async (input, init) => {
       seen = new Request(input, init);
-      return Response.json({ ...runningWire, state: "destroying" });
+      return Response.json(runningWire);
     },
   });
   const result = await client.running(lease, jwt, { correlation });
-  expect(result.state).toBe("destroying");
-  expect(result.restoredFromIncarnation).toBeNull();
+  expect(result.state).toBe("active");
   expect(seen.headers.get("x-cail-request-id")).toBe(
     "9bb3ff5c-62c4-4e18-bca7-b48876e43af6",
   );
@@ -129,6 +132,122 @@ test("forwards cail-log correlation on typed sandbox operations", async () => {
   );
   expect(seen.url).toBe(`https://x/sandbox/v1/sandbox/${lease.id}/running`);
   expect(seen.headers.get("x-cail-sandbox-lease")).toBe(lease.leaseCapability);
+});
+
+test("reads strict aggregate usage and immutable per-lease settlement", async () => {
+  const seen: Request[] = [];
+  const usageWire = {
+    period: "2026-07-22",
+    unit: "mib_milliseconds",
+    limit: 1_000,
+    used: 400,
+    reserved: 100,
+    remaining: 500,
+    active_leases: 1,
+  };
+  const settlementWire = {
+    lease_id: lease.id,
+    period_start: "2026-07-22T12:00:00.000Z",
+    period_end: "2026-07-22T12:05:00.000Z",
+    unit: "mib_milliseconds",
+    quantity: 400,
+    settled_at: "2026-07-22T12:05:01.000Z",
+    state: "settled",
+  };
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale-workbench",
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      seen.push(request);
+      return Response.json(
+        request.url.endsWith(`/usage/${lease.id}`)
+          ? settlementWire
+          : usageWire,
+      );
+    },
+  });
+
+  await expect(client.usage(jwt)).resolves.toEqual({
+    period: "2026-07-22",
+    unit: "mib_milliseconds",
+    limit: 1_000,
+    used: 400,
+    reserved: 100,
+    remaining: 500,
+    activeLeases: 1,
+  });
+  await expect(client.settlement(lease.id, jwt)).resolves.toEqual({
+    leaseId: lease.id,
+    periodStart: "2026-07-22T12:00:00.000Z",
+    periodEnd: "2026-07-22T12:05:00.000Z",
+    unit: "mib_milliseconds",
+    quantity: 400,
+    settledAt: "2026-07-22T12:05:01.000Z",
+    state: "settled",
+  });
+  expect(seen.map((request) => request.url)).toEqual([
+    "https://x/sandbox/v1/usage",
+    `https://x/sandbox/v1/usage/${lease.id}`,
+  ]);
+  expect(
+    seen.every(
+      (request) =>
+        request.headers.get("x-cail-identity-jwt") === "session-token" &&
+        request.headers.get("x-cail-app") === "kale-workbench" &&
+        request.headers.get("x-cail-sandbox-lease") === null,
+    ),
+  ).toBeTrue();
+});
+
+test("fails closed on malformed usage and settlement responses", async () => {
+  for (const body of [
+    {
+      period: "2026-02-30",
+      unit: "mib_milliseconds",
+      limit: 1_000,
+      used: 400,
+      reserved: 100,
+      remaining: 500,
+      active_leases: 1,
+    },
+    {
+      period: "2026-07-22",
+      unit: "mib_milliseconds",
+      limit: 1_000,
+      used: 400,
+      reserved: 100,
+      remaining: 501,
+      active_leases: 1,
+    },
+  ]) {
+    const client = createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => Response.json(body),
+    });
+    await expect(client.usage(jwt)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  }
+
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json({
+        lease_id: "33333333-3333-4333-8333-333333333333",
+        period_start: "2026-07-22T12:00:00.000Z",
+        period_end: "2026-07-22T12:05:00.000Z",
+        unit: "mib_milliseconds",
+        quantity: Number.MAX_SAFE_INTEGER + 1,
+        settled_at: "2026-07-22T12:05:01.000Z",
+        state: "settled",
+      }),
+  });
+  await expect(client.settlement(lease.id, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+  });
 });
 
 test("adopts only the canonical cail-log request-id header", () => {
@@ -232,6 +351,28 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
       if (request.url.endsWith("/running")) {
         return Response.json(runningWire);
       }
+      if (request.url.endsWith(`/usage/${lease.id}`)) {
+        return Response.json({
+          lease_id: lease.id,
+          period_start: "2026-07-22T12:00:00.000Z",
+          period_end: "2026-07-22T12:05:00.000Z",
+          unit: "mib_milliseconds",
+          quantity: 400,
+          settled_at: "2026-07-22T12:05:01.000Z",
+          state: "settled",
+        });
+      }
+      if (request.url.endsWith("/usage")) {
+        return Response.json({
+          period: "2026-07-22",
+          unit: "mib_milliseconds",
+          limit: 1_000,
+          used: 400,
+          reserved: 100,
+          remaining: 500,
+          active_leases: 1,
+        });
+      }
       if (request.url.endsWith("/openapi.json"))
         return Response.json({ openapi: "3.1.1" });
       if (request.method === "GET") return new Response("data");
@@ -247,9 +388,11 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
   await client.readFile(lease, operation, "a.txt", jwt, options);
   await client.destroySession(lease, operation, jwt, options);
   await client.destroy(lease, jwt, options);
+  await client.usage(jwt, options);
+  await client.settlement(lease.id, jwt, options);
   await client.openapi(jwt, options);
   controller.abort();
-  expect(seen).toHaveLength(8);
+  expect(seen).toHaveLength(10);
   expect(seen.every((signal) => signal.aborted)).toBeTrue();
 });
 
@@ -288,7 +431,7 @@ test("rejects malformed runtime credentials before fetch", async () => {
   ]) {
     await expect(
       client.running(lease, credential as typeof jwt),
-    ).rejects.toThrow("valid jwt or key token");
+    ).rejects.toThrow("valid identity JWT");
   }
   expect(calls).toBe(0);
 });
@@ -1249,7 +1392,7 @@ test("accepts contract-shaped uuid ids", async () => {
   );
 });
 
-test("rejects paths the gateway cannot represent before sending credentials", async () => {
+test("rejects paths the service cannot represent before sending credentials", async () => {
   let calls = 0;
   const client = createCailSandboxClient({
     baseUrl: "https://x",

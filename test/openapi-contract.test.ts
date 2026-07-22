@@ -5,20 +5,20 @@ import OPENAPI from "../contract/sandbox-openapi.json";
 import PACKAGE from "../package.json";
 
 const CONTRACT_SHA256 =
-  "47a662a0073405e727a8dd17e70ed23e78f6eb6819551624934f4d9e8c99f784";
+  "f0e117af9257b70a6e31cbd9dea44175f8a8164b088a780854089b8c6ba11b29";
 
-test("pins the reviewed gateway OpenAPI artifact", () => {
+test("pins the reviewed Sandbox service OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(
     CONTRACT_SHA256,
   );
   expect(OPENAPI.openapi).toBe("3.1.1");
   expect(OPENAPI.info.version).toBe("0.1.0");
-  const gateway = new URL(
-    "../../cail-gateway/sandbox-bridge/src/openapi.json",
+  const service = new URL(
+    "../../cail-sandbox-service/contract/openapi.json",
     import.meta.url,
   );
-  if (existsSync(gateway)) expect(bytes).toEqual(readFileSync(gateway));
+  if (existsSync(service)) expect(bytes).toEqual(readFileSync(service));
 });
 
 test("exports the reviewed OpenAPI artifact as a package subpath", () => {
@@ -27,13 +27,13 @@ test("exports the reviewed OpenAPI artifact as a package subpath", () => {
   );
 });
 
-test("an explicitly configured missing gateway contract fails closed", () => {
+test("an explicitly configured missing service contract fails closed", () => {
   const result = Bun.spawnSync(
-    ["bun", "run", "scripts/check-gateway-contract.ts"],
+    ["bun", "run", "scripts/check-service-contract.ts"],
     {
       env: {
         ...process.env,
-        CAIL_GATEWAY_OPENAPI: "/definitely/missing/cail-openapi.json",
+        CAIL_SANDBOX_SERVICE_OPENAPI: "/definitely/missing/cail-openapi.json",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -41,7 +41,7 @@ test("an explicitly configured missing gateway contract fails closed", () => {
   );
   expect(result.exitCode).not.toBe(0);
   expect(new TextDecoder().decode(result.stderr)).toContain(
-    "Configured gateway OpenAPI does not exist",
+    "Configured Sandbox service OpenAPI does not exist",
   );
 });
 
@@ -60,6 +60,8 @@ test("thin client wraps every authenticated sandbox operation", () => {
     new Set([
       "health",
       "getOpenApi",
+      "getSandboxUsage",
+      "getSandboxSettlement",
       "createSandbox",
       "destroySandbox",
       "isSandboxRunning",
@@ -75,6 +77,8 @@ test("thin client wraps every authenticated sandbox operation", () => {
     "create(",
     "running(",
     "destroy(",
+    "usage(",
+    "settlement(",
     "exec(",
     "readFile(",
     "writeFile(",
@@ -117,22 +121,24 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   );
 });
 
-test("production auth contract excludes personal keys and declares canonical RS256 identity", () => {
+test("service auth contract requires the canonical RS256 identity JWT", () => {
   expect(OPENAPI.components.securitySchemes).toHaveProperty("identityJwt");
-  expect(OPENAPI.components.securitySchemes).not.toHaveProperty("identityJwtV2");
   expect(OPENAPI.components.securitySchemes.identityJwt.description).toContain(
-    "RS256 CAIL session JWT",
+    "RS256 CAIL identity JWT",
   );
-  expect(OPENAPI.components.securitySchemes.bearerAuth.description).toContain(
-    "delegated CAIL key",
-  );
-  expect(OPENAPI.components.securitySchemes.bearerAuth.description).toContain(
-    "personal keys",
-  );
+  expect(OPENAPI.components.securitySchemes).not.toHaveProperty("bearerAuth");
   expect(JSON.stringify(OPENAPI)).not.toContain("x-cail-poc-auth-override");
 });
 
-test("contract exposes no cumulative Sandbox quota or remaining balance", () => {
-  expect("headers" in OPENAPI.components).toBeFalse();
-  expect(JSON.stringify(OPENAPI)).not.toContain("Sandbox-Quota");
+test("contract exposes aggregate and immutable settled usage", () => {
+  expect(OPENAPI.paths).toHaveProperty("/sandbox/v1/usage");
+  expect(OPENAPI.paths).toHaveProperty("/sandbox/v1/usage/{leaseId}");
+  expect(OPENAPI.components.schemas.Usage.properties.unit).toEqual({
+    const: "mib_milliseconds",
+  });
+  expect(OPENAPI.components.schemas.Settlement.properties.quantity).toEqual({
+    type: "integer",
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+  });
 });

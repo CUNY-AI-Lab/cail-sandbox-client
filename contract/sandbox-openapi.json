@@ -1,20 +1,35 @@
 {
   "openapi": "3.1.1",
   "info": {
-    "title": "CAIL Sandbox Gateway",
+    "title": "CAIL Sandbox Service",
     "version": "0.1.0",
-    "description": "Bounded CAIL-governed remote execution. Sandbox IDs are identifiers, not authorization credentials."
+    "description": "Subject-owned, short-lived offline code execution backed by the official Cloudflare Sandbox Bridge."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [{ "url": "/" }],
-  "security": [{ "bearerAuth": [] }, { "identityJwt": [] }],
+  "security": [{ "identityJwt": [] }],
   "paths": {
     "/health": {
       "get": {
         "operationId": "health",
         "security": [],
         "responses": {
-          "200": { "description": "Liveness only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } }
+          "200": {
+            "description": "Configured liveness",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          },
+          "503": {
+            "description": "Configuration unavailable",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
         }
       }
     },
@@ -23,9 +38,50 @@
         "operationId": "getOpenApi",
         "parameters": [{ "$ref": "#/components/parameters/App" }],
         "responses": {
-          "200": { "description": "This OpenAPI document", "content": { "application/json": { "schema": { "type": "object" } } } },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
+          "200": {
+            "description": "This OpenAPI document",
+            "content": {
+              "application/json": { "schema": { "type": "object" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/usage": {
+      "get": {
+        "operationId": "getSandboxUsage",
+        "parameters": [{ "$ref": "#/components/parameters/App" }],
+        "responses": {
+          "200": {
+            "description": "Exact subject reservation and settled usage",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Usage" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/usage/{leaseId}": {
+      "get": {
+        "operationId": "getSandboxSettlement",
+        "parameters": [
+          { "$ref": "#/components/parameters/LeaseId" },
+          { "$ref": "#/components/parameters/App" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Immutable terminal usage for the owned settled lease",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Settlement" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/Error" },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -34,14 +90,23 @@
       "post": {
         "operationId": "createSandbox",
         "parameters": [{ "$ref": "#/components/parameters/App" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSandboxRequest" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSandboxRequest" }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Sandbox admitted and created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxLifecycle" } } } },
-          "400": { "$ref": "#/components/responses/Error" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "409": { "$ref": "#/components/responses/Error" },
-          "429": { "$ref": "#/components/responses/Error" },
+          "201": {
+            "description": "Lease acquired",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SandboxLifecycle" }
+              }
+            }
+          },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -49,12 +114,13 @@
     "/sandbox/v1/sandbox/{id}": {
       "delete": {
         "operationId": "destroySandbox",
-        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/SandboxId" },
+          { "$ref": "#/components/parameters/App" },
+          { "$ref": "#/components/parameters/LeaseCapability" }
+        ],
         "responses": {
           "204": { "description": "Destroyed or already destroyed" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -62,62 +128,20 @@
     "/sandbox/v1/sandbox/{id}/running": {
       "get": {
         "operationId": "isSandboxRunning",
-        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/SandboxId" },
+          { "$ref": "#/components/parameters/App" },
+          { "$ref": "#/components/parameters/LeaseCapability" }
+        ],
         "responses": {
-          "200": { "description": "Current liveness and CAIL lifecycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Running" } } } },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "410": { "$ref": "#/components/responses/Error" },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
-      }
-    },
-    "/sandbox/v1/sandbox/{id}/exec": {
-      "post": {
-        "operationId": "execCommand",
-        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }, { "$ref": "#/components/parameters/SessionIdHeader" }, { "$ref": "#/components/parameters/OperationId" }, { "$ref": "#/components/parameters/OperationCapability" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExecRequest" } } } },
-        "responses": {
-          "200": { "description": "WHATWG event stream containing base64 stdout/stderr and exactly one terminal exit/error event", "content": { "text/event-stream": { "schema": { "type": "string" } } } },
-          "400": { "$ref": "#/components/responses/Error" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "409": { "$ref": "#/components/responses/Error" },
-          "410": { "$ref": "#/components/responses/Error" },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
-      }
-    },
-    "/sandbox/v1/sandbox/{id}/file/{path}": {
-      "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/FilePath" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }, { "$ref": "#/components/parameters/SessionIdHeader" }, { "$ref": "#/components/parameters/OperationId" }, { "$ref": "#/components/parameters/OperationCapability" }],
-      "get": {
-        "operationId": "readFile",
-        "responses": {
-          "200": { "description": "Raw workspace-contained file bytes with the source MIME type preserved", "content": { "*/*": { "schema": { "type": "string", "format": "binary" } } } },
-          "400": { "$ref": "#/components/responses/Error" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "409": { "$ref": "#/components/responses/Error" },
-          "410": { "$ref": "#/components/responses/Error" },
-          "413": { "$ref": "#/components/responses/Error" },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
-      },
-      "put": {
-        "operationId": "writeFile",
-        "requestBody": { "required": true, "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
-        "responses": {
-          "200": { "description": "File written", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } },
-          "400": { "$ref": "#/components/responses/Error" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "409": { "$ref": "#/components/responses/Error" },
-          "410": { "$ref": "#/components/responses/Error" },
-          "413": { "$ref": "#/components/responses/Error" },
+          "200": {
+            "description": "Current runtime and lease state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Running" }
+              }
+            }
+          },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -125,16 +149,28 @@
     "/sandbox/v1/sandbox/{id}/session": {
       "post": {
         "operationId": "createSession",
-        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateSessionRequest" } } } },
+        "parameters": [
+          { "$ref": "#/components/parameters/SandboxId" },
+          { "$ref": "#/components/parameters/App" },
+          { "$ref": "#/components/parameters/LeaseCapability" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSessionRequest" }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Explicit session and fenced operation acquired", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionLifecycle" } } } },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "409": { "$ref": "#/components/responses/Error" },
-          "410": { "$ref": "#/components/responses/Error" },
-          "429": { "$ref": "#/components/responses/Error" },
+          "201": {
+            "description": "Explicit operation session acquired",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SessionLifecycle" }
+              }
+            }
+          },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -142,12 +178,98 @@
     "/sandbox/v1/sandbox/{id}/session/{sid}": {
       "delete": {
         "operationId": "destroySession",
-        "parameters": [{ "$ref": "#/components/parameters/SandboxId" }, { "$ref": "#/components/parameters/SessionId" }, { "$ref": "#/components/parameters/App" }, { "$ref": "#/components/parameters/LeaseCapability" }, { "$ref": "#/components/parameters/OperationId" }, { "$ref": "#/components/parameters/OperationCapability" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/SandboxId" },
+          { "$ref": "#/components/parameters/SessionId" },
+          { "$ref": "#/components/parameters/App" },
+          { "$ref": "#/components/parameters/LeaseCapability" },
+          { "$ref": "#/components/parameters/SessionIdHeader" },
+          { "$ref": "#/components/parameters/OperationId" },
+          { "$ref": "#/components/parameters/OperationCapability" }
+        ],
         "responses": {
           "204": { "description": "Session destroyed" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/exec": {
+      "post": {
+        "operationId": "execCommand",
+        "parameters": [
+          { "$ref": "#/components/parameters/SandboxId" },
+          { "$ref": "#/components/parameters/App" },
+          { "$ref": "#/components/parameters/LeaseCapability" },
+          { "$ref": "#/components/parameters/SessionIdHeader" },
+          { "$ref": "#/components/parameters/OperationId" },
+          { "$ref": "#/components/parameters/OperationCapability" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExecRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Base64 stdout/stderr followed by exactly one exit or error SSE terminal",
+            "content": {
+              "text/event-stream": { "schema": { "type": "string" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/sandbox/v1/sandbox/{id}/file/{path}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/SandboxId" },
+        { "$ref": "#/components/parameters/FilePath" },
+        { "$ref": "#/components/parameters/App" },
+        { "$ref": "#/components/parameters/LeaseCapability" },
+        { "$ref": "#/components/parameters/SessionIdHeader" },
+        { "$ref": "#/components/parameters/OperationId" },
+        { "$ref": "#/components/parameters/OperationCapability" }
+      ],
+      "get": {
+        "operationId": "readFile",
+        "responses": {
+          "200": {
+            "description": "Raw workspace file bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "put": {
+        "operationId": "writeFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "maxLength": 8388608
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File written",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Ok" }
+              }
+            }
+          },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -155,42 +277,276 @@
   },
   "components": {
     "securitySchemes": {
-      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Application-bound delegated CAIL key. Ordinary personal keys and query-string credentials are not accepted during the bounded pilot." },
-      "identityJwt": { "type": "apiKey", "in": "header", "name": "X-CAIL-Identity-JWT", "description": "RS256 CAIL session JWT with the cail:sandbox-bridge audience." }
+      "identityJwt": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CAIL-Identity-JWT",
+        "description": "RS256 CAIL identity JWT with scalar cail:sandbox-service audience."
+      }
     },
     "parameters": {
-      "App": { "name": "X-CAIL-App", "in": "header", "required": true, "description": "Validated attribution for session credentials. For delegated keys, the key-service application binding is authoritative and must match this value.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } },
-      "SandboxId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-      "SessionId": { "name": "sid", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-      "FilePath": { "name": "path", "in": "path", "required": true, "description": "Slash-preserving, percent-encoded path relative to /workspace", "schema": { "type": "string", "minLength": 1 } },
-      "LeaseCapability": { "name": "X-CAIL-Sandbox-Lease", "in": "header", "required": true, "description": "Backend-only capability issued with the current lease generation", "schema": { "type": "string", "minLength": 32 } },
-      "SessionIdHeader": { "name": "X-CAIL-Session-Id", "in": "header", "required": true, "schema": { "type": "string", "format": "uuid" } },
-      "OperationId": { "name": "X-CAIL-Operation-Id", "in": "header", "required": true, "description": "Backend-only opaque operation identifier", "schema": { "type": "string", "minLength": 32 } },
-      "OperationCapability": { "name": "X-CAIL-Operation-Capability", "in": "header", "required": true, "description": "Backend-only capability issued by explicit session creation", "schema": { "type": "string", "minLength": 32 } }
+      "App": {
+        "name": "X-CAIL-App",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" }
+      },
+      "SandboxId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "LeaseId": {
+        "name": "leaseId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "SessionId": {
+        "name": "sid",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "FilePath": {
+        "name": "path",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "LeaseCapability": {
+        "name": "X-CAIL-Sandbox-Lease",
+        "in": "header",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ControlValue" }
+      },
+      "SessionIdHeader": {
+        "name": "X-CAIL-Session-Id",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "OperationId": {
+        "name": "X-CAIL-Operation-Id",
+        "in": "header",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ControlValue" }
+      },
+      "OperationCapability": {
+        "name": "X-CAIL-Operation-Capability",
+        "in": "header",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ControlValue" }
+      }
     },
     "responses": {
       "Error": {
         "description": "CAIL nested error envelope",
         "headers": {
-          "X-CAIL-Request-Id": { "required": true, "description": "Canonical inter-service correlation id", "schema": { "type": "string" } },
-          "x-request-id": { "required": true, "schema": { "type": "string" } },
-          "x-should-retry": { "required": true, "schema": { "type": "string", "enum": ["true", "false"] } }
+          "X-CAIL-Request-Id": {
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          "x-request-id": {
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          "x-should-retry": {
+            "required": true,
+            "schema": { "type": "string", "enum": ["true", "false"] }
+          }
         },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+          }
+        }
       }
     },
     "schemas": {
-      "Health": { "type": "object", "required": ["status", "service"], "properties": { "status": { "const": "healthy" }, "service": { "const": "cail-sandbox-bridge" } }, "additionalProperties": false },
-      "Ok": { "type": "object", "required": ["ok"], "properties": { "ok": { "const": true } }, "additionalProperties": false },
-      "ControlValue": { "type": "string", "minLength": 32, "maxLength": 256, "pattern": "^[A-Za-z0-9._~-]+$" },
-      "CreateSandboxRequest": { "type": "object", "required": ["scope_key", "idempotency_key"], "properties": { "scope_key": { "$ref": "#/components/schemas/ControlValue" }, "idempotency_key": { "$ref": "#/components/schemas/ControlValue" } }, "additionalProperties": false },
-      "CreateSessionRequest": { "type": "object", "required": ["operation_id", "idempotency_key"], "properties": { "operation_id": { "$ref": "#/components/schemas/ControlValue" }, "idempotency_key": { "$ref": "#/components/schemas/ControlValue" } }, "additionalProperties": false },
-      "SandboxLifecycle": { "type": "object", "required": ["id", "state", "expires_at", "lease_capability", "lease_generation"], "properties": { "id": { "type": "string", "format": "uuid" }, "state": { "const": "active" }, "expires_at": { "type": "string", "format": "date-time" }, "lease_capability": { "$ref": "#/components/schemas/ControlValue" }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
-      "SessionLifecycle": { "type": "object", "required": ["id", "operation_capability", "operation_generation", "expires_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "operation_capability": { "$ref": "#/components/schemas/ControlValue" }, "operation_generation": { "type": "integer", "minimum": 1 }, "expires_at": { "type": "string", "format": "date-time" } }, "additionalProperties": false },
-      "Running": { "type": "object", "required": ["running", "state", "expires_at", "incarnation", "restored_from_incarnation", "lease_generation"], "properties": { "running": { "type": "boolean" }, "state": { "enum": ["active", "destroying", "destroyed"] }, "expires_at": { "type": "string", "format": "date-time" }, "incarnation": { "type": ["string", "null"], "description": "Current physical container incarnation." }, "restored_from_incarnation": { "type": ["string", "null"], "description": "Physical incarnation that produced the successfully restored workspace backup, or null for a fresh workspace." }, "lease_generation": { "type": "integer", "minimum": 1 } }, "additionalProperties": false },
-      "ExecRequest": { "type": "object", "required": ["command", "session_id"], "properties": { "command": { "type": "string", "minLength": 1, "maxLength": 16384 }, "session_id": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
-      "ErrorEnvelope": { "type": "object", "required": ["error"], "properties": { "error": { "$ref": "#/components/schemas/ErrorObject" } }, "additionalProperties": false },
-      "ErrorObject": { "type": "object", "required": ["message", "type", "param", "code"], "properties": { "message": { "type": "string" }, "type": { "enum": ["invalid_request_error", "authentication_error", "permission_error", "conflict_error", "rate_limit_error", "server_error"] }, "param": { "type": ["string", "null"] }, "code": { "type": "string" }, "cail": { "type": "object", "additionalProperties": true } }, "additionalProperties": false }
+      "Health": {
+        "type": "object",
+        "required": ["status", "service"],
+        "properties": {
+          "status": { "enum": ["healthy", "unavailable"] },
+          "service": { "const": "cail-sandbox-service" }
+        },
+        "additionalProperties": false
+      },
+      "Ok": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": { "ok": { "const": true } },
+        "additionalProperties": false
+      },
+      "ControlValue": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9._~-]+$"
+      },
+      "CreateSandboxRequest": {
+        "type": "object",
+        "required": ["scope_key", "idempotency_key", "profile"],
+        "properties": {
+          "scope_key": { "$ref": "#/components/schemas/ControlValue" },
+          "idempotency_key": { "$ref": "#/components/schemas/ControlValue" },
+          "profile": { "const": "offline-code" }
+        },
+        "additionalProperties": false
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "required": ["operation_id", "idempotency_key"],
+        "properties": {
+          "operation_id": { "$ref": "#/components/schemas/ControlValue" },
+          "idempotency_key": { "$ref": "#/components/schemas/ControlValue" }
+        },
+        "additionalProperties": false
+      },
+      "SandboxLifecycle": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "expires_at",
+          "lease_capability",
+          "lease_generation",
+          "profile",
+          "instance_class"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "state": { "const": "active" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "lease_capability": { "$ref": "#/components/schemas/ControlValue" },
+          "lease_generation": { "type": "integer", "minimum": 1 },
+          "profile": { "const": "offline-code" },
+          "instance_class": { "enum": ["lite", "basic", "standard-1"] }
+        },
+        "additionalProperties": false
+      },
+      "SessionLifecycle": {
+        "type": "object",
+        "required": [
+          "id",
+          "operation_capability",
+          "operation_generation",
+          "expires_at"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "operation_capability": {
+            "$ref": "#/components/schemas/ControlValue"
+          },
+          "operation_generation": { "type": "integer", "minimum": 1 },
+          "expires_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      },
+      "Running": {
+        "type": "object",
+        "required": ["running", "state", "expires_at", "lease_generation"],
+        "properties": {
+          "running": { "type": "boolean" },
+          "state": { "const": "active" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "lease_generation": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      },
+      "Usage": {
+        "type": "object",
+        "required": [
+          "period",
+          "unit",
+          "limit",
+          "used",
+          "reserved",
+          "remaining",
+          "active_leases"
+        ],
+        "properties": {
+          "period": { "type": "string", "format": "date" },
+          "unit": { "const": "mib_milliseconds" },
+          "limit": { "type": "integer", "minimum": 0 },
+          "used": { "type": "integer", "minimum": 0 },
+          "reserved": { "type": "integer", "minimum": 0 },
+          "remaining": { "type": "integer", "minimum": 0 },
+          "active_leases": { "type": "integer", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": false
+      },
+      "Settlement": {
+        "type": "object",
+        "required": [
+          "lease_id",
+          "period_start",
+          "period_end",
+          "unit",
+          "quantity",
+          "settled_at",
+          "state"
+        ],
+        "properties": {
+          "lease_id": { "type": "string", "format": "uuid" },
+          "period_start": { "type": "string", "format": "date-time" },
+          "period_end": { "type": "string", "format": "date-time" },
+          "unit": { "const": "mib_milliseconds" },
+          "quantity": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "settled_at": { "type": "string", "format": "date-time" },
+          "state": { "const": "settled" }
+        },
+        "additionalProperties": false
+      },
+      "ExecRequest": {
+        "type": "object",
+        "required": ["command", "session_id"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1, "maxLength": 16384 },
+          "session_id": { "type": "string", "format": "uuid" }
+        },
+        "additionalProperties": false
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "$ref": "#/components/schemas/ErrorObject" }
+        },
+        "additionalProperties": false
+      },
+      "ErrorObject": {
+        "type": "object",
+        "required": ["message", "type", "param", "code"],
+        "properties": {
+          "message": { "type": "string" },
+          "type": {
+            "enum": [
+              "invalid_request_error",
+              "authentication_error",
+              "permission_error",
+              "conflict_error",
+              "rate_limit_error",
+              "server_error"
+            ]
+          },
+          "param": { "type": ["string", "null"] },
+          "code": { "type": "string" },
+          "cail": {
+            "type": "object",
+            "additionalProperties": {
+              "type": ["string", "number", "boolean", "null"]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
     }
   }
 }
