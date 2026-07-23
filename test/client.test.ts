@@ -55,6 +55,8 @@ const correlation: CailCorrelation = {
   trace_flags: 1,
   request_id: "9bb3ff5c-62c4-4e18-bca7-b48876e43af6",
 };
+const responseRequestId = "33333333-3333-4333-8333-333333333333";
+const alternateRequestId = "44444444-4444-4444-8444-444444444444";
 
 function sseResponse(body: BodyInit | null, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
@@ -559,16 +561,16 @@ test("preserves response metadata on unexpected statuses and malformed success b
     Response.json(leaseWire, {
       status: 202,
       headers: {
-        "x-cail-request-id": "req-protocol",
-        "x-request-id": "req-protocol",
+        "x-cail-request-id": responseRequestId,
+        "x-request-id": responseRequestId,
         "x-should-retry": "false",
       },
     }),
     new Response("not json", {
       status: 201,
       headers: {
-        "x-cail-request-id": "req-protocol",
-        "x-request-id": "req-protocol",
+        "x-cail-request-id": responseRequestId,
+        "x-request-id": responseRequestId,
         "x-should-retry": "false",
       },
     }),
@@ -580,7 +582,7 @@ test("preserves response metadata on unexpected statuses and malformed success b
     });
     await expect(client.create(createInput, jwt)).rejects.toMatchObject({
       code: "invalid_response",
-      requestId: "req-protocol",
+      requestId: responseRequestId,
       shouldRetry: false,
     });
   }
@@ -646,8 +648,8 @@ test("normalizes invalid JSON and null success bodies to invalid_response", asyn
 test("requires the OpenAPI media type for JSON success responses", async () => {
   for (const contentType of [null, "text/plain", "application/problem+json"]) {
     const headers = new Headers({
-      "x-cail-request-id": "req-wrong-media",
-      "x-request-id": "req-wrong-media",
+      "x-cail-request-id": responseRequestId,
+      "x-request-id": responseRequestId,
       "x-should-retry": "false",
     });
     if (contentType !== null) headers.set("content-type", contentType);
@@ -659,7 +661,7 @@ test("requires the OpenAPI media type for JSON success responses", async () => {
     });
     await expect(client.create(createInput, jwt)).rejects.toMatchObject({
       code: "invalid_response",
-      requestId: "req-wrong-media",
+      requestId: responseRequestId,
       shouldRetry: false,
     });
   }
@@ -696,8 +698,8 @@ test("does not trust a typed error envelope sent with the wrong media type", asy
           status: 403,
           headers: {
             "content-type": "text/plain",
-            "x-cail-request-id": "req-error-media",
-            "x-request-id": "req-error-media",
+            "x-cail-request-id": responseRequestId,
+            "x-request-id": responseRequestId,
             "x-should-retry": "false",
           },
         },
@@ -706,7 +708,7 @@ test("does not trust a typed error envelope sent with the wrong media type", asy
   await expect(client.running(lease, jwt)).rejects.toMatchObject({
     code: "unknown_error",
     type: "unknown_error",
-    requestId: "req-error-media",
+    requestId: responseRequestId,
     shouldRetry: false,
   });
 });
@@ -760,8 +762,8 @@ test("parses nested CAIL errors and response metadata", async () => {
         {
           status: 403,
           headers: {
-            "x-cail-request-id": "req-error",
-            "x-request-id": "req-error",
+            "x-cail-request-id": responseRequestId,
+            "x-request-id": responseRequestId,
             "x-should-retry": "false",
           },
         },
@@ -771,7 +773,7 @@ test("parses nested CAIL errors and response metadata", async () => {
   expect(error).toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({
     code: "forbidden",
-    requestId: "req-error",
+    requestId: responseRequestId,
     shouldRetry: false,
     details: { scope: "sandbox:exec" },
   });
@@ -793,34 +795,34 @@ test("requires exact error metadata and rejects conflicting aliases", async () =
       Response.json(errorBody, {
         status: 403,
         headers: {
-          "x-cail-request-id": "exact-id",
-          "x-request-id": "exact-id",
+          "x-cail-request-id": responseRequestId,
+          "x-request-id": responseRequestId,
           "x-should-retry": "false",
         },
       }),
   });
   await expect(exact.running(lease, jwt)).rejects.toMatchObject({
     code: "forbidden",
-    requestId: "exact-id",
+    requestId: responseRequestId,
     shouldRetry: false,
   });
 
   for (const headers of [
     new Headers({
-      "x-request-id": "alias-only",
+      "x-request-id": responseRequestId,
       "x-should-retry": "false",
     }),
     new Headers({
-      "x-cail-request-id": "canonical-only",
+      "x-cail-request-id": responseRequestId,
       "x-should-retry": "false",
     }),
     new Headers({
-      "x-cail-request-id": "missing-retry",
-      "x-request-id": "missing-retry",
+      "x-cail-request-id": responseRequestId,
+      "x-request-id": responseRequestId,
     }),
     new Headers({
-      "x-cail-request-id": "bad-retry",
-      "x-request-id": "bad-retry",
+      "x-cail-request-id": responseRequestId,
+      "x-request-id": responseRequestId,
       "x-should-retry": "FALSE",
     }),
   ]) {
@@ -842,15 +844,15 @@ test("requires exact error metadata and rejects conflicting aliases", async () =
       Response.json(errorBody, {
         status: 403,
         headers: {
-          "x-cail-request-id": "canonical-id",
-          "x-request-id": "different-alias",
+          "x-cail-request-id": responseRequestId,
+          "x-request-id": alternateRequestId,
           "x-should-retry": "false",
         },
       }),
   });
   await expect(conflicting.running(lease, jwt)).rejects.toMatchObject({
     code: "invalid_response",
-    requestId: "canonical-id",
+    requestId: null,
     shouldRetry: false,
   });
 });
@@ -880,8 +882,8 @@ test("fails closed on nested errors outside the OpenAPI schema", async () => {
           {
             status: 500,
             headers: {
-              "x-cail-request-id": "req-schema",
-              "x-request-id": "req-schema",
+              "x-cail-request-id": responseRequestId,
+              "x-request-id": responseRequestId,
               "x-should-retry": "false",
             },
           },
@@ -890,7 +892,7 @@ test("fails closed on nested errors outside the OpenAPI schema", async () => {
     await expect(client.running(lease, jwt)).rejects.toMatchObject({
       code: "unknown_error",
       type: "unknown_error",
-      requestId: "req-schema",
+      requestId: responseRequestId,
       shouldRetry: false,
     });
   }
@@ -913,8 +915,8 @@ test("rejects malformed nested envelopes but retains response metadata", async (
         {
           status: 500,
           headers: {
-            "x-cail-request-id": "req-malformed",
-            "x-request-id": "req-malformed",
+            "x-cail-request-id": responseRequestId,
+            "x-request-id": responseRequestId,
             "x-should-retry": "true",
           },
         },
@@ -923,7 +925,7 @@ test("rejects malformed nested envelopes but retains response metadata", async (
   const error = await client.running(lease, jwt).catch((caught) => caught);
   expect(error).toMatchObject({
     code: "unknown_error",
-    requestId: "req-malformed",
+    requestId: responseRequestId,
     shouldRetry: true,
   });
 });
@@ -955,8 +957,8 @@ test("streams decoded output and one terminal event", async () => {
 test("requires text/event-stream before parsing command events", async () => {
   for (const contentType of [null, "text/plain", "application/json"]) {
     const headers = new Headers({
-      "x-cail-request-id": "req-sse-media",
-      "x-request-id": "req-sse-media",
+      "x-cail-request-id": responseRequestId,
+      "x-request-id": responseRequestId,
       "x-should-retry": "false",
     });
     if (contentType !== null) headers.set("content-type", contentType);
@@ -978,7 +980,7 @@ test("requires text/event-stream before parsing command events", async () => {
     })().catch((caught) => caught);
     expect(error).toMatchObject({
       code: "invalid_stream",
-      requestId: "req-sse-media",
+      requestId: responseRequestId,
       shouldRetry: false,
     });
   }
@@ -987,7 +989,7 @@ test("requires text/event-stream before parsing command events", async () => {
 test("a terminal SSE event is withheld until EOF proves uniqueness", async () => {
   for (const terminal of [
     'event: exit\ndata: {"exit_code":0}\n\n',
-    'event: error\ndata: {"code":"command_failed","message":"No.","request_id":"req-1"}\n\n',
+    'event: error\ndata: {"code":"command_failed","message":"No.","request_id":"33333333-3333-4333-8333-333333333333"}\n\n',
   ]) {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream({
@@ -1023,8 +1025,8 @@ test("rejects a second terminal event instead of accepting the first", async () 
     app: "kale",
     fetchImpl: async () =>
       sseResponse(
-        'event: exit\ndata: {"exit_code":0}\n\n' +
-          'event: error\ndata: {"code":"late","message":"Late.","request_id":"req-late"}\n\n',
+          'event: exit\ndata: {"exit_code":0}\n\n' +
+          'event: error\ndata: {"code":"late","message":"Late.","request_id":"33333333-3333-4333-8333-333333333333"}\n\n',
       ),
   });
   await expect(
@@ -1090,6 +1092,7 @@ test("canceling iteration cancels the underlying command response", async () => 
     data: new TextEncoder().encode("x"),
   });
   await events.return(undefined);
+  await Bun.sleep(0);
   expect(canceled).toBeTrue();
 });
 
@@ -1230,8 +1233,8 @@ test("preserves mid-stream transport errors and response metadata", async () => 
     fetchImpl: async () =>
       sseResponse(stream, {
         headers: {
-          "x-cail-request-id": "req-stream",
-          "x-request-id": "req-stream",
+          "x-cail-request-id": responseRequestId,
+          "x-request-id": responseRequestId,
           "x-should-retry": "false",
         },
       }),
@@ -1243,7 +1246,7 @@ test("preserves mid-stream transport errors and response metadata", async () => 
   expect(error).toBeInstanceOf(CailSandboxError);
   expect(error).toMatchObject({
     code: "stream_transport_error",
-    requestId: "req-stream",
+    requestId: responseRequestId,
     shouldRetry: false,
     cause: transportError,
   });

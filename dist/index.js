@@ -29,7 +29,10 @@ const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_COMMAND_CHARS = 16_384;
 const MAX_OUTPUT_EVENT_BYTES = 1_048_576;
+const MAX_OUTPUT_EVENT_BASE64_CHARS = 4 * Math.ceil(MAX_OUTPUT_EVENT_BYTES / 3);
+const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const ERROR_TYPES = new Set([
     "invalid_request_error",
     "authentication_error",
@@ -57,12 +60,39 @@ function credentialHeaders(credential) {
     }
     return { "x-cail-identity-jwt": candidate.token };
 }
+function logResponseCleanupDiagnostic(operation) {
+    console.error({
+        event: "cail_sandbox_client.response_cleanup_failed",
+        error: "response_cleanup_failed",
+        operation,
+    });
+}
 function cancelResponseBody(response) {
     try {
-        void response.body?.cancel().catch(() => undefined);
+        void response.body
+            ?.cancel()
+            .catch(() => logResponseCleanupDiagnostic("body_cancel"));
     }
     catch {
-        // Best-effort transport teardown must not hide the protocol error.
+        logResponseCleanupDiagnostic("body_cancel");
+    }
+}
+function cancelResponseReader(reader) {
+    try {
+        void reader
+            .cancel()
+            .catch(() => logResponseCleanupDiagnostic("reader_cancel"));
+    }
+    catch {
+        logResponseCleanupDiagnostic("reader_cancel");
+    }
+}
+function releaseResponseReader(reader) {
+    try {
+        reader.releaseLock();
+    }
+    catch {
+        logResponseCleanupDiagnostic("reader_release");
     }
 }
 function requireStatus(response, expected) {
@@ -70,13 +100,24 @@ function requireStatus(response, expected) {
         cancelResponseBody(response);
         throw responseError(response, "invalid_response", `Sandbox response used unexpected HTTP status ${response.status}.`);
     }
+    try {
+        responseRequestId(response);
+    }
+    catch (error) {
+        cancelResponseBody(response);
+        throw error;
+    }
     return response;
 }
 function responseRequestId(response) {
     const canonical = response.headers.get("x-cail-request-id");
     const alias = response.headers.get("x-request-id");
+    if ((canonical !== null && !UUID.test(canonical)) ||
+        (alias !== null && !UUID.test(alias))) {
+        throw new CailSandboxError("invalid_response", "Sandbox response used an invalid request identifier.", response.status, "unknown_error", null, {}, null, responseShouldRetry(response));
+    }
     if (canonical !== null && alias !== null && canonical !== alias) {
-        throw new CailSandboxError("invalid_response", "Sandbox response used conflicting request identifiers.", response.status, "unknown_error", null, {}, canonical, responseShouldRetry(response));
+        throw new CailSandboxError("invalid_response", "Sandbox response used conflicting request identifiers.", response.status, "unknown_error", null, {}, null, responseShouldRetry(response));
     }
     return canonical ?? alias;
 }
@@ -125,15 +166,66 @@ async function parseSuccessRecord(response, message) {
     }
     let body;
     try {
-        body = await response.json();
+        body = await readBoundedJson(response);
     }
-    catch {
-        throw responseError(response, "invalid_response", message);
+    catch (cause) {
+        throw responseError(response, "invalid_response", message, "unknown_error", cause);
     }
     if (!isRecord(body)) {
         throw responseError(response, "invalid_response", message);
     }
     return body;
+}
+class ResponseBodyReadError extends Error {
+    constructor(message, options) {
+        super(message, options);
+        this.name = "ResponseBodyReadError";
+    }
+}
+async function readBoundedJson(response) {
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null &&
+        /^\d+$/u.test(declaredLength) &&
+        Number(declaredLength) > MAX_JSON_RESPONSE_BYTES) {
+        cancelResponseBody(response);
+        throw new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+    }
+    if (!response.body) {
+        throw new ResponseBodyReadError("Sandbox JSON response had no body.");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let total = 0;
+    let text = "";
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                text += decoder.decode();
+                break;
+            }
+            total += value.byteLength;
+            if (total > MAX_JSON_RESPONSE_BYTES) {
+                cancelResponseReader(reader);
+                throw new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+            }
+            text += decoder.decode(value, { stream: true });
+        }
+    }
+    catch (cause) {
+        if (cause instanceof ResponseBodyReadError)
+            throw cause;
+        throw new ResponseBodyReadError("Sandbox JSON response could not be read.", { cause });
+    }
+    finally {
+        releaseResponseReader(reader);
+    }
+    try {
+        return JSON.parse(text);
+    }
+    catch (cause) {
+        throw new ResponseBodyReadError("Sandbox JSON response was not valid JSON.", { cause });
+    }
 }
 function isDateTime(value) {
     if (typeof value !== "string")
@@ -367,10 +459,10 @@ async function parseError(response) {
     }
     let body;
     try {
-        body = await response.json();
+        body = await readBoundedJson(response);
     }
-    catch {
-        return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry);
+    catch (cause) {
+        return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry, cause);
     }
     if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
         const error = body.error;
@@ -633,12 +725,23 @@ async function* parseCommandEvents(response) {
                 if (!hasOnlyKeys(data, ["data"]) || typeof data.data !== "string") {
                     throw invalidStream("Command output event was malformed.");
                 }
+                if (data.data.length > MAX_OUTPUT_EVENT_BASE64_CHARS ||
+                    !CANONICAL_BASE64.test(data.data)) {
+                    throw invalidStream("Command output was not valid canonical base64.");
+                }
                 let bytes;
                 try {
                     bytes = Uint8Array.from(atob(data.data), (value) => value.charCodeAt(0));
                 }
                 catch {
-                    throw invalidStream("Command output was not valid base64.");
+                    throw invalidStream("Command output was not valid canonical base64.");
+                }
+                let roundTrip = "";
+                for (let offset = 0; offset < bytes.byteLength; offset += 8_192) {
+                    roundTrip += String.fromCharCode(...bytes.subarray(offset, offset + 8_192));
+                }
+                if (btoa(roundTrip) !== data.data) {
+                    throw invalidStream("Command output was not valid canonical base64.");
                 }
                 if (bytes.byteLength > MAX_OUTPUT_EVENT_BYTES) {
                     throw invalidStream("Command output event exceeded the CAIL limit.");
@@ -662,7 +765,8 @@ async function* parseCommandEvents(response) {
                 if (!hasOnlyKeys(data, ["code", "message", "request_id"]) ||
                     typeof data.code !== "string" ||
                     typeof data.message !== "string" ||
-                    typeof data.request_id !== "string") {
+                    typeof data.request_id !== "string" ||
+                    !UUID.test(data.request_id)) {
                     throw invalidStream("Command error event was malformed.");
                 }
                 terminal = {
@@ -687,17 +791,11 @@ async function* parseCommandEvents(response) {
     }
     finally {
         if (!streamDone) {
-            // cancel() on an already-errored stream rejects with the stored error;
-            // swallowing it here keeps the exception from the catch block intact
-            // (a rejection escaping finally would override it).
-            try {
-                await reader.cancel();
-            }
-            catch {
-                // Best-effort teardown only.
-            }
+            // Teardown is deliberately non-blocking: a broken transport cancel must
+            // neither stall nor replace the primary protocol/transport failure.
+            cancelResponseReader(reader);
         }
-        reader.releaseLock();
+        releaseResponseReader(reader);
     }
     if (!terminal) {
         throw invalidStream("Command stream ended without a terminal event.");
