@@ -261,27 +261,87 @@ test("does not stall an SSE protocol failure on broken cleanup", async () => {
   expect(outcome).toMatchObject({ code: "invalid_stream" });
 });
 
-test("rejects malformed UTF-8 instead of repairing JSON response bytes", async () => {
-  const body = new Uint8Array([
+test("rejects malformed UTF-8 and cancels the still-open response", async () => {
+  let cancelled = false;
+  const malformed = new Uint8Array([
     ...new TextEncoder().encode('{"value":"'),
     0xff,
     ...new TextEncoder().encode('"}'),
   ]);
-  const error = await client(async () => {
-    return new Response(body, {
-      headers: { "content-type": "application/json" },
-    });
-  })
-    .openapi(jwt)
-    .catch((error) => error);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(malformed);
+    },
+    cancel() {
+      cancelled = true;
+      return new Promise(() => undefined);
+    },
+  });
+  const outcome = await Promise.race([
+    client(async () => {
+      return new Response(body, {
+        headers: { "content-type": "application/json" },
+      });
+    })
+      .openapi(jwt)
+      .catch((error) => error),
+    Bun.sleep(50).then(() => "stalled"),
+  ]);
 
-  expect(error).toMatchObject({
+  expect(outcome).not.toBe("stalled");
+  expect(outcome).toMatchObject({
     code: "invalid_response",
     cause: {
       name: "ResponseBodyReadError",
       cause: { name: "TypeError" },
     },
   });
+  expect(cancelled).toBe(true);
+});
+
+test("preserves malformed UTF-8 as the primary when cancellation rejects", async () => {
+  const cleanupSecret = "utf8 cleanup provider detail";
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const malformed = new Uint8Array([
+      ...new TextEncoder().encode('{"value":"'),
+      0xff,
+      ...new TextEncoder().encode('"}'),
+    ]);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(malformed);
+      },
+      cancel() {
+        return Promise.reject(new Error(cleanupSecret));
+      },
+    });
+    const error = await client(async () => {
+      return new Response(body, {
+        headers: { "content-type": "application/json" },
+      });
+    })
+      .openapi(jwt)
+      .catch((error) => error);
+    await Bun.sleep(0);
+
+    expect(error).toMatchObject({
+      code: "invalid_response",
+      cause: {
+        name: "ResponseBodyReadError",
+        cause: { name: "TypeError" },
+      },
+    });
+    expect(error.message).not.toContain(cleanupSecret);
+    expect(diagnostic).toHaveBeenCalledWith({
+      event: "cail_sandbox_client.response_cleanup_failed",
+      error: "response_cleanup_failed",
+      operation: "reader_cancel",
+    });
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(cleanupSecret);
+  } finally {
+    diagnostic.mockRestore();
+  }
 });
 
 test("accepts an exact-limit JSON response", async () => {

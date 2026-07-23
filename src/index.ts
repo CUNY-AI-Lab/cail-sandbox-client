@@ -465,6 +465,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     }
   } catch (cause) {
     if (cause instanceof ResponseBodyReadError) throw cause;
+    cancelResponseReader(reader);
     throw new ResponseBodyReadError(
       "Sandbox JSON response could not be read.",
       { cause },
