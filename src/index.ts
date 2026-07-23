@@ -2,7 +2,10 @@ import {
   outboundCorrelationHeaders,
   type CailCorrelation,
 } from "../vendor/cail-log/dist/index.js";
-import { EventSourceParserStream } from "eventsource-parser/stream";
+import {
+  EventSourceParserStream,
+  type EventSourceMessage,
+} from "eventsource-parser/stream";
 
 export {
   CAIL_REQUEST_ID_HEADER,
@@ -296,10 +299,14 @@ function logResponseCleanupDiagnostic(
 }
 
 function cancelResponseBody(response: Response): void {
+  if (response.body) cancelResponseStream(response.body);
+}
+
+function cancelResponseStream<T>(stream: ReadableStream<T>): void {
   try {
-    void response.body
-      ?.cancel()
-      .catch(() => logResponseCleanupDiagnostic("body_cancel"));
+    void Promise.resolve(stream.cancel()).catch(() =>
+      logResponseCleanupDiagnostic("body_cancel"),
+    );
   } catch {
     logResponseCleanupDiagnostic("body_cancel");
   }
@@ -309,9 +316,9 @@ function cancelResponseReader<T>(
   reader: ReadableStreamDefaultReader<T>,
 ): void {
   try {
-    void reader
-      .cancel()
-      .catch(() => logResponseCleanupDiagnostic("reader_cancel"));
+    void Promise.resolve(reader.cancel()).catch(() =>
+      logResponseCleanupDiagnostic("reader_cancel"),
+    );
   } catch {
     logResponseCleanupDiagnostic("reader_cancel");
   }
@@ -1243,18 +1250,26 @@ async function* parseCommandEvents(
     throw invalidStream("Command response had no body.");
   }
   let terminal: CommandTerminalEvent | null = null;
-  const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(
-    new EventSourceParserStream({
-      maxBufferSize: 2 * 1024 * 1024,
-      onError(error) {
-        liveEventSourceParseErrors.add(error);
-        throw error;
-      },
-    }),
-  );
-  const reader = events.getReader();
+  let cleanupStream: ReadableStream<unknown> =
+    response.body as ReadableStream<unknown>;
+  let reader: ReadableStreamDefaultReader<EventSourceMessage> | null = null;
   let streamDone = false;
   try {
+    const decoded = response.body.pipeThrough(
+      new TextDecoderStream("utf-8", { fatal: true }),
+    );
+    cleanupStream = decoded as ReadableStream<unknown>;
+    const events = decoded.pipeThrough(
+      new EventSourceParserStream({
+        maxBufferSize: 2 * 1024 * 1024,
+        onError(error) {
+          liveEventSourceParseErrors.add(error);
+          throw error;
+        },
+      }),
+    );
+    cleanupStream = events as ReadableStream<unknown>;
+    reader = events.getReader();
     while (true) {
       const { done, value: message } = await reader.read();
       if (done) {
@@ -1364,9 +1379,13 @@ async function* parseCommandEvents(
     if (!streamDone) {
       // Teardown is deliberately non-blocking: a broken transport cancel must
       // neither stall nor replace the primary protocol/transport failure.
-      cancelResponseReader(reader);
+      if (reader) {
+        cancelResponseReader(reader);
+      } else {
+        cancelResponseStream(cleanupStream);
+      }
     }
-    releaseResponseReader(reader);
+    if (reader) releaseResponseReader(reader);
   }
   if (!terminal) {
     throw invalidStream("Command stream ended without a terminal event.");

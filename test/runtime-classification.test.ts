@@ -43,12 +43,18 @@ const runtimes = [
   },
 ] as const;
 
-type CleanupMode = "resolve" | "reject" | "never";
+type CleanupMode = "resolve" | "reject" | "never" | "throw";
+type ReleaseMode = "resolve" | "throw";
 
-function trackedErroredStream(primary: unknown, cleanup: CleanupMode) {
+function trackedErroredStream(
+  primary: unknown,
+  cleanup: CleanupMode,
+  release: ReleaseMode = "resolve",
+) {
   let cancelCalls = 0;
   let releaseCalls = 0;
   const cleanupError = new Error("private cleanup sentinel");
+  const releaseError = new Error("private release sentinel");
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.error(primary);
@@ -62,6 +68,7 @@ function trackedErroredStream(primary: unknown, cleanup: CleanupMode) {
       Object.defineProperty(reader, "cancel", {
         value: () => {
           cancelCalls += 1;
+          if (cleanup === "throw") throw cleanupError;
           if (cleanup === "reject") return Promise.reject(cleanupError);
           if (cleanup === "never") return new Promise<void>(() => undefined);
           return Promise.resolve();
@@ -70,6 +77,7 @@ function trackedErroredStream(primary: unknown, cleanup: CleanupMode) {
       Object.defineProperty(reader, "releaseLock", {
         value: () => {
           releaseCalls += 1;
+          if (release === "throw") throw releaseError;
           releaseLock();
         },
       });
@@ -79,6 +87,7 @@ function trackedErroredStream(primary: unknown, cleanup: CleanupMode) {
   return {
     stream,
     cleanupError,
+    releaseError,
     cancelCalls: () => cancelCalls,
     releaseCalls: () => releaseCalls,
   };
@@ -116,6 +125,83 @@ function sseResponseForError(primary: unknown, cleanup: CleanupMode) {
   };
 }
 
+function sseHeaders() {
+  return {
+    "content-type": "text/event-stream",
+    "x-cail-request-id": requestId,
+    "x-request-id": requestId,
+    "x-should-retry": "false",
+  };
+}
+
+function sseResponseFromChunks(chunks: Uint8Array[]) {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    }),
+    { headers: sseHeaders() },
+  );
+}
+
+function setupFailureResponse(
+  primary: unknown,
+  cleanup: CleanupMode,
+  stage: "decoder" | "parser" | "reader",
+) {
+  let bodyCancelCalls = 0;
+  let decodedCancelCalls = 0;
+  let eventsCancelCalls = 0;
+  const cleanupError = new Error("private setup cleanup sentinel");
+  const cleanupAction = (record: () => void) => () => {
+    record();
+    if (cleanup === "throw") throw cleanupError;
+    if (cleanup === "reject") return Promise.reject(cleanupError);
+    if (cleanup === "never") return new Promise<void>(() => undefined);
+    return Promise.resolve();
+  };
+  const events = {
+    cancel: cleanupAction(() => {
+      eventsCancelCalls += 1;
+    }),
+    getReader() {
+      throw primary;
+    },
+  };
+  const decoded = {
+    cancel: cleanupAction(() => {
+      decodedCancelCalls += 1;
+    }),
+    pipeThrough() {
+      if (stage === "parser") throw primary;
+      return events;
+    },
+  };
+  const body = new ReadableStream<Uint8Array>();
+  Object.defineProperties(body, {
+    cancel: {
+      value: cleanupAction(() => {
+        bodyCancelCalls += 1;
+      }),
+    },
+    pipeThrough: {
+      value: () => {
+        if (stage === "decoder") throw primary;
+        return decoded;
+      },
+    },
+  });
+  return {
+    response: new Response(body, { headers: sseHeaders() }),
+    cleanupError,
+    bodyCancelCalls: () => bodyCancelCalls,
+    decodedCancelCalls: () => decodedCancelCalls,
+    eventsCancelCalls: () => eventsCancelCalls,
+  };
+}
+
 async function executeToError(
   runtime: (typeof runtimes)[number],
   response: Response,
@@ -136,6 +222,206 @@ async function executeToError(
     }
   })().catch((error) => error);
 }
+
+async function executeToEvents(
+  runtime: (typeof runtimes)[number],
+  response: Response,
+) {
+  const client = runtime.create({
+    baseUrl: "https://sandbox.invalid",
+    app: "runtime-classification",
+    fetchImpl: async () => response,
+  });
+  const events = [];
+  for await (const event of await client.exec(
+    lease,
+    operation,
+    "true",
+    jwt,
+  )) {
+    events.push(event);
+  }
+  return events;
+}
+
+test("rejects malformed SSE UTF-8, including split invalid sequences", async () => {
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(
+    'event: error\ndata: {"code":"command_failed","message":"bad',
+  );
+  const suffix = encoder.encode(
+    `","request_id":"${requestId}"}\n\n`,
+  );
+  const malformedCases = [
+    [new Uint8Array([...prefix, 0xff, ...suffix])],
+    [
+      new Uint8Array([...prefix, 0xe2]),
+      new Uint8Array([0x28, 0xa1, ...suffix]),
+    ],
+  ];
+
+  for (const runtime of runtimes) {
+    for (const chunks of malformedCases) {
+      const error = await executeToEvents(
+        runtime,
+        sseResponseFromChunks(chunks),
+      ).catch((caught) => caught);
+      expect(error).toBeInstanceOf(runtime.ErrorClass);
+      expect(error).toMatchObject({
+        code: "stream_transport_error",
+        status: 200,
+        requestId,
+        shouldRetry: false,
+        cause: { name: "TypeError" },
+      });
+      expect((error as Error).message).toBe(
+        "Command stream transport failed.",
+      );
+      expect((error as Error).message).not.toContain("bad");
+    }
+  }
+});
+
+test("preserves valid UTF-8 split inside a multibyte SSE field", async () => {
+  const encoder = new TextEncoder();
+  const message = "valid 💚 split";
+  const bytes = encoder.encode(
+    `event: error\ndata: ${JSON.stringify({
+      code: "command_failed",
+      message,
+      request_id: requestId,
+    })}\n\n`,
+  );
+  const marker = encoder.encode("💚");
+  const markerStart = bytes.findIndex((value, index) =>
+    marker.every((part, offset) => bytes[index + offset] === part),
+  );
+  expect(markerStart).toBeGreaterThan(0);
+  const chunks = [
+    bytes.slice(0, markerStart + 1),
+    bytes.slice(markerStart + 1, markerStart + 3),
+    bytes.slice(markerStart + 3),
+  ];
+
+  for (const runtime of runtimes) {
+    expect(
+      await executeToEvents(runtime, sseResponseFromChunks(chunks)),
+    ).toEqual([
+      {
+        type: "error",
+        code: "command_failed",
+        message,
+        requestId,
+      },
+    ]);
+  }
+});
+
+test("guards every SSE setup stage and cleans the latest owned stream", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {
+    throw new Error("private diagnostic sink sentinel");
+  });
+  try {
+    for (const runtime of runtimes) {
+      for (const stage of ["decoder", "parser", "reader"] as const) {
+        for (const cleanup of [
+          "resolve",
+          "reject",
+          "never",
+          "throw",
+        ] as const) {
+          const primary = new Error(`private ${stage} setup sentinel`);
+          const tracked = setupFailureResponse(primary, cleanup, stage);
+          const outcome = await Promise.race([
+            executeToError(runtime, tracked.response),
+            Bun.sleep(50).then(() => "stalled"),
+          ]);
+          expect(outcome, `${runtime.label}/${stage}/${cleanup}`).not.toBe(
+            "stalled",
+          );
+          expect(outcome).toBeInstanceOf(runtime.ErrorClass);
+          expect(outcome).toMatchObject({
+            code: "stream_transport_error",
+            status: 200,
+            requestId,
+            shouldRetry: false,
+            cause: primary,
+          });
+          expect((outcome as Error).message).not.toContain("sentinel");
+          expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
+          expect(tracked.decodedCancelCalls()).toBe(
+            stage === "parser" ? 1 : 0,
+          );
+          expect(tracked.eventsCancelCalls()).toBe(stage === "reader" ? 1 : 0);
+        }
+      }
+    }
+    await Bun.sleep(0);
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("sentinel");
+    expect(unhandled).toEqual([]);
+  } finally {
+    diagnostic.mockRestore();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("SSE reader cleanup cannot stall or replace the primary failure", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {
+    throw new Error("private diagnostic sink sentinel");
+  });
+  try {
+    for (const runtime of runtimes) {
+      for (const cleanup of [
+        "resolve",
+        "reject",
+        "never",
+        "throw",
+      ] as const) {
+        for (const release of ["resolve", "throw"] as const) {
+          const primary = new Error("private reader failure sentinel");
+          const tracked = trackedErroredStream(primary, cleanup, release);
+          const responseBody = new ReadableStream<Uint8Array>();
+          Object.defineProperty(responseBody, "pipeThrough", {
+            value: () => ({
+              pipeThrough: () => tracked.stream,
+            }),
+          });
+          const outcome = await Promise.race([
+            executeToError(
+              runtime,
+              new Response(responseBody, { headers: sseHeaders() }),
+            ),
+            Bun.sleep(50).then(() => "stalled"),
+          ]);
+          expect(
+            outcome,
+            `${runtime.label}/${cleanup}/${release}`,
+          ).not.toBe("stalled");
+          expect(outcome).toBeInstanceOf(runtime.ErrorClass);
+          expect(outcome).toMatchObject({
+            code: "stream_transport_error",
+            cause: primary,
+          });
+          expect((outcome as Error).message).not.toContain("sentinel");
+          expect(tracked.cancelCalls()).toBe(1);
+          expect(tracked.releaseCalls()).toBe(1);
+        }
+      }
+    }
+    await Bun.sleep(0);
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("sentinel");
+    expect(unhandled).toEqual([]);
+  } finally {
+    diagnostic.mockRestore();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
 
 test("preserves hostile JSON read failures through every cleanup outcome", async () => {
   const unhandled: unknown[] = [];

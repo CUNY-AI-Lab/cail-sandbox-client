@@ -1,5 +1,5 @@
 import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
-import { EventSourceParserStream } from "eventsource-parser/stream";
+import { EventSourceParserStream, } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
 const liveCailSandboxErrors = new WeakSet();
 const liveResponseBodyReadErrors = new WeakSet();
@@ -109,10 +109,12 @@ function logResponseCleanupDiagnostic(operation) {
     }
 }
 function cancelResponseBody(response) {
+    if (response.body)
+        cancelResponseStream(response.body);
+}
+function cancelResponseStream(stream) {
     try {
-        void response.body
-            ?.cancel()
-            .catch(() => logResponseCleanupDiagnostic("body_cancel"));
+        void Promise.resolve(stream.cancel()).catch(() => logResponseCleanupDiagnostic("body_cancel"));
     }
     catch {
         logResponseCleanupDiagnostic("body_cancel");
@@ -120,9 +122,7 @@ function cancelResponseBody(response) {
 }
 function cancelResponseReader(reader) {
     try {
-        void reader
-            .cancel()
-            .catch(() => logResponseCleanupDiagnostic("reader_cancel"));
+        void Promise.resolve(reader.cancel()).catch(() => logResponseCleanupDiagnostic("reader_cancel"));
     }
     catch {
         logResponseCleanupDiagnostic("reader_cancel");
@@ -737,16 +737,21 @@ async function* parseCommandEvents(response) {
         throw invalidStream("Command response had no body.");
     }
     let terminal = null;
-    const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream({
-        maxBufferSize: 2 * 1024 * 1024,
-        onError(error) {
-            liveEventSourceParseErrors.add(error);
-            throw error;
-        },
-    }));
-    const reader = events.getReader();
+    let cleanupStream = response.body;
+    let reader = null;
     let streamDone = false;
     try {
+        const decoded = response.body.pipeThrough(new TextDecoderStream("utf-8", { fatal: true }));
+        cleanupStream = decoded;
+        const events = decoded.pipeThrough(new EventSourceParserStream({
+            maxBufferSize: 2 * 1024 * 1024,
+            onError(error) {
+                liveEventSourceParseErrors.add(error);
+                throw error;
+            },
+        }));
+        cleanupStream = events;
+        reader = events.getReader();
         while (true) {
             const { done, value: message } = await reader.read();
             if (done) {
@@ -846,9 +851,15 @@ async function* parseCommandEvents(response) {
         if (!streamDone) {
             // Teardown is deliberately non-blocking: a broken transport cancel must
             // neither stall nor replace the primary protocol/transport failure.
-            cancelResponseReader(reader);
+            if (reader) {
+                cancelResponseReader(reader);
+            }
+            else {
+                cancelResponseStream(cleanupStream);
+            }
         }
-        releaseResponseReader(reader);
+        if (reader)
+            releaseResponseReader(reader);
     }
     if (!terminal) {
         throw invalidStream("Command stream ended without a terminal event.");
