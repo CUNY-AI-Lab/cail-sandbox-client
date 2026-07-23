@@ -1,8 +1,9 @@
 import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
-import { EventSourceParserStream, ParseError } from "eventsource-parser/stream";
+import { EventSourceParserStream } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
 const liveCailSandboxErrors = new WeakSet();
 const liveResponseBodyReadErrors = new WeakSet();
+const liveEventSourceParseErrors = new WeakSet();
 export class CailSandboxError extends Error {
     code;
     status;
@@ -37,6 +38,14 @@ const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get;
+const CAIL_LOG_CORRELATION_MESSAGES = new Set([
+    "cail-log: correlation must be an object",
+    "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
+    "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
+    "cail-log: request_id must be a lowercase UUID v4",
+    "cail-log: trace_flags must be 0 or 1",
+    "cail-log: tracestate must be a structurally valid W3C tracestate list",
+]);
 const ERROR_TYPES = new Set([
     "invalid_request_error",
     "authentication_error",
@@ -68,34 +77,10 @@ function ownDataValue(value, key) {
         return undefined;
     }
 }
-function hasPrototype(value, expected, maximumDepth = 8) {
-    if ((typeof value !== "object" || value === null) &&
-        typeof value !== "function") {
-        return false;
-    }
-    try {
-        let current = Object.getPrototypeOf(value);
-        for (let depth = 0; current !== null && depth < maximumDepth; depth += 1) {
-            if (current === expected)
-                return true;
-            current = Object.getPrototypeOf(current);
-        }
-    }
-    catch {
-        return false;
-    }
-    return false;
-}
 function safeCorrelationErrorMessage(error) {
-    if (!hasPrototype(error, TypeError.prototype, 1) &&
-        !hasPrototype(error, Error.prototype, 1)) {
-        return undefined;
-    }
     const message = ownDataValue(error, "message");
     return typeof message === "string" &&
-        message.length > 0 &&
-        message.length <= 256 &&
-        !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(message)
+        CAIL_LOG_CORRELATION_MESSAGES.has(message)
         ? message
         : undefined;
 }
@@ -711,15 +696,8 @@ export function createCailSandboxClient(options) {
     };
 }
 function isAbortError(error) {
-    const ownName = ownDataValue(error, "name");
-    if ((ownName === "AbortError" || ownName === "TimeoutError") &&
-        hasPrototype(error, Error.prototype)) {
-        return true;
-    }
-    if (DOM_EXCEPTION_NAME_GETTER === undefined ||
-        !hasPrototype(error, DOMException.prototype, 1)) {
+    if (DOM_EXCEPTION_NAME_GETTER === undefined)
         return false;
-    }
     try {
         const name = DOM_EXCEPTION_NAME_GETTER.call(error);
         return name === "AbortError" || name === "TimeoutError";
@@ -729,9 +707,7 @@ function isAbortError(error) {
     }
 }
 function isParseError(error) {
-    return (ownDataValue(error, "name") === "ParseError" &&
-        typeof ownDataValue(error, "type") === "string" &&
-        hasPrototype(error, ParseError.prototype));
+    return liveEventSourceParseErrors.has(error);
 }
 // The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
@@ -763,7 +739,10 @@ async function* parseCommandEvents(response) {
     let terminal = null;
     const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(new EventSourceParserStream({
         maxBufferSize: 2 * 1024 * 1024,
-        onError: "terminate",
+        onError(error) {
+            liveEventSourceParseErrors.add(error);
+            throw error;
+        },
     }));
     const reader = events.getReader();
     let streamDone = false;

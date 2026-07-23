@@ -2,7 +2,7 @@ import {
   outboundCorrelationHeaders,
   type CailCorrelation,
 } from "../vendor/cail-log/dist/index.js";
-import { EventSourceParserStream, ParseError } from "eventsource-parser/stream";
+import { EventSourceParserStream } from "eventsource-parser/stream";
 
 export {
   CAIL_REQUEST_ID_HEADER,
@@ -58,6 +58,7 @@ export type CommandTerminalEvent =
 
 const liveCailSandboxErrors = new WeakSet<object>();
 const liveResponseBodyReadErrors = new WeakSet<object>();
+const liveEventSourceParseErrors = new WeakSet<object>();
 
 export class CailSandboxError extends Error {
   constructor(
@@ -205,6 +206,14 @@ const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(
   DOMException.prototype,
   "name",
 )?.get;
+const CAIL_LOG_CORRELATION_MESSAGES = new Set([
+  "cail-log: correlation must be an object",
+  "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
+  "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
+  "cail-log: request_id must be a lowercase UUID v4",
+  "cail-log: trace_flags must be 0 or 1",
+  "cail-log: tracestate must be a structurally valid W3C tracestate list",
+]);
 const ERROR_TYPES = new Set([
   "invalid_request_error",
   "authentication_error",
@@ -244,41 +253,10 @@ function ownDataValue(value: unknown, key: PropertyKey): unknown {
   }
 }
 
-function hasPrototype(
-  value: unknown,
-  expected: object,
-  maximumDepth = 8,
-): boolean {
-  if (
-    (typeof value !== "object" || value === null) &&
-    typeof value !== "function"
-  ) {
-    return false;
-  }
-  try {
-    let current: object | null = Object.getPrototypeOf(value);
-    for (let depth = 0; current !== null && depth < maximumDepth; depth += 1) {
-      if (current === expected) return true;
-      current = Object.getPrototypeOf(current);
-    }
-  } catch {
-    return false;
-  }
-  return false;
-}
-
 function safeCorrelationErrorMessage(error: unknown): string | undefined {
-  if (
-    !hasPrototype(error, TypeError.prototype, 1) &&
-    !hasPrototype(error, Error.prototype, 1)
-  ) {
-    return undefined;
-  }
   const message = ownDataValue(error, "message");
   return typeof message === "string" &&
-    message.length > 0 &&
-    message.length <= 256 &&
-    !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(message)
+    CAIL_LOG_CORRELATION_MESSAGES.has(message)
     ? message
     : undefined;
 }
@@ -1215,19 +1193,7 @@ export function createCailSandboxClient(
 }
 
 function isAbortError(error: unknown): boolean {
-  const ownName = ownDataValue(error, "name");
-  if (
-    (ownName === "AbortError" || ownName === "TimeoutError") &&
-    hasPrototype(error, Error.prototype)
-  ) {
-    return true;
-  }
-  if (
-    DOM_EXCEPTION_NAME_GETTER === undefined ||
-    !hasPrototype(error, DOMException.prototype, 1)
-  ) {
-    return false;
-  }
+  if (DOM_EXCEPTION_NAME_GETTER === undefined) return false;
   try {
     const name = DOM_EXCEPTION_NAME_GETTER.call(error);
     return name === "AbortError" || name === "TimeoutError";
@@ -1237,11 +1203,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 function isParseError(error: unknown): boolean {
-  return (
-    ownDataValue(error, "name") === "ParseError" &&
-    typeof ownDataValue(error, "type") === "string" &&
-    hasPrototype(error, ParseError.prototype)
-  );
+  return liveEventSourceParseErrors.has(error as object);
 }
 
 // The service contract declares sandbox/session ids as format: uuid; at
@@ -1284,7 +1246,10 @@ async function* parseCommandEvents(
   const events = response.body.pipeThrough(new TextDecoderStream()).pipeThrough(
     new EventSourceParserStream({
       maxBufferSize: 2 * 1024 * 1024,
-      onError: "terminate",
+      onError(error) {
+        liveEventSourceParseErrors.add(error);
+        throw error;
+      },
     }),
   );
   const reader = events.getReader();
