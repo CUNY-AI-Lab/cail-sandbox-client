@@ -1,7 +1,6 @@
 import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
 import { EventSourceParserStream, } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
-const liveCailSandboxErrors = new WeakSet();
 const liveResponseBodyReadErrors = new WeakSet();
 const liveEventSourceParseErrors = new WeakSet();
 export class CailSandboxError extends Error {
@@ -25,7 +24,6 @@ export class CailSandboxError extends Error {
         this.cause = cause;
         this.name = "CailSandboxError";
         Object.setPrototypeOf(this, CailSandboxError.prototype);
-        liveCailSandboxErrors.add(this);
     }
 }
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -109,8 +107,14 @@ function logResponseCleanupDiagnostic(operation) {
     }
 }
 function cancelResponseBody(response) {
-    if (response.body)
-        cancelResponseStream(response.body);
+    try {
+        const body = response.body;
+        if (body)
+            cancelResponseStream(body);
+    }
+    catch {
+        logResponseCleanupDiagnostic("body_cancel");
+    }
 }
 function cancelResponseStream(stream) {
     try {
@@ -728,20 +732,26 @@ function encodePath(path) {
     return path.split("/").map(encodeURIComponent).join("/");
 }
 async function* parseCommandEvents(response) {
-    const invalidStream = (message, cause) => responseError(response, "invalid_stream", message, "unknown_error", cause);
-    if (responseMediaType(response) !== "text/event-stream") {
-        cancelResponseBody(response);
-        throw invalidStream("Command response did not use the text/event-stream media type.");
-    }
-    if (!response.body) {
-        throw invalidStream("Command response had no body.");
-    }
+    const ownedStreamErrors = new WeakSet();
+    const invalidStream = (message, cause) => {
+        const error = responseError(response, "invalid_stream", message, "unknown_error", cause);
+        ownedStreamErrors.add(error);
+        return error;
+    };
     let terminal = null;
-    let cleanupStream = response.body;
+    let cleanupStream = null;
     let reader = null;
     let streamDone = false;
     try {
-        const decoded = response.body.pipeThrough(new TextDecoderStream("utf-8", { fatal: true }));
+        const body = response.body;
+        cleanupStream = body;
+        if (responseMediaType(response) !== "text/event-stream") {
+            throw invalidStream("Command response did not use the text/event-stream media type.");
+        }
+        if (!body) {
+            throw invalidStream("Command response had no body.");
+        }
+        const decoded = body.pipeThrough(new TextDecoderStream("utf-8", { fatal: true }));
         cleanupStream = decoded;
         const events = decoded.pipeThrough(new EventSourceParserStream({
             maxBufferSize: 2 * 1024 * 1024,
@@ -837,7 +847,7 @@ async function* parseCommandEvents(response) {
         }
     }
     catch (error) {
-        if (liveCailSandboxErrors.has(error))
+        if (ownedStreamErrors.has(error))
             throw error;
         // Deliberate abort is not a framing failure — surface it unchanged.
         if (isAbortError(error))
@@ -854,7 +864,7 @@ async function* parseCommandEvents(response) {
             if (reader) {
                 cancelResponseReader(reader);
             }
-            else {
+            else if (cleanupStream) {
                 cancelResponseStream(cleanupStream);
             }
         }

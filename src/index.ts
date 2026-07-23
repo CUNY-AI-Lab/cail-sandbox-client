@@ -59,7 +59,6 @@ export type CommandTerminalEvent =
   | { type: "exit"; exitCode: number }
   | { type: "error"; code: string; message: string; requestId: string };
 
-const liveCailSandboxErrors = new WeakSet<object>();
 const liveResponseBodyReadErrors = new WeakSet<object>();
 const liveEventSourceParseErrors = new WeakSet<object>();
 
@@ -78,7 +77,6 @@ export class CailSandboxError extends Error {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "CailSandboxError";
     Object.setPrototypeOf(this, CailSandboxError.prototype);
-    liveCailSandboxErrors.add(this);
   }
 }
 
@@ -299,7 +297,12 @@ function logResponseCleanupDiagnostic(
 }
 
 function cancelResponseBody(response: Response): void {
-  if (response.body) cancelResponseStream(response.body);
+  try {
+    const body = response.body;
+    if (body) cancelResponseStream(body);
+  } catch {
+    logResponseCleanupDiagnostic("body_cancel");
+  }
 }
 
 function cancelResponseStream<T>(stream: ReadableStream<T>): void {
@@ -1238,24 +1241,34 @@ function encodePath(path: string) {
 async function* parseCommandEvents(
   response: Response,
 ): AsyncGenerator<CommandOutputEvent | CommandTerminalEvent> {
-  const invalidStream = (message: string, cause?: unknown) =>
-    responseError(response, "invalid_stream", message, "unknown_error", cause);
-  if (responseMediaType(response) !== "text/event-stream") {
-    cancelResponseBody(response);
-    throw invalidStream(
-      "Command response did not use the text/event-stream media type.",
+  const ownedStreamErrors = new WeakSet<object>();
+  const invalidStream = (message: string, cause?: unknown) => {
+    const error = responseError(
+      response,
+      "invalid_stream",
+      message,
+      "unknown_error",
+      cause,
     );
-  }
-  if (!response.body) {
-    throw invalidStream("Command response had no body.");
-  }
+    ownedStreamErrors.add(error);
+    return error;
+  };
   let terminal: CommandTerminalEvent | null = null;
-  let cleanupStream: ReadableStream<unknown> =
-    response.body as ReadableStream<unknown>;
+  let cleanupStream: ReadableStream<unknown> | null = null;
   let reader: ReadableStreamDefaultReader<EventSourceMessage> | null = null;
   let streamDone = false;
   try {
-    const decoded = response.body.pipeThrough(
+    const body = response.body;
+    cleanupStream = body as ReadableStream<unknown> | null;
+    if (responseMediaType(response) !== "text/event-stream") {
+      throw invalidStream(
+        "Command response did not use the text/event-stream media type.",
+      );
+    }
+    if (!body) {
+      throw invalidStream("Command response had no body.");
+    }
+    const decoded = body.pipeThrough(
       new TextDecoderStream("utf-8", { fatal: true }),
     );
     cleanupStream = decoded as ReadableStream<unknown>;
@@ -1362,7 +1375,7 @@ async function* parseCommandEvents(
       }
     }
   } catch (error) {
-    if (liveCailSandboxErrors.has(error as object)) throw error;
+    if (ownedStreamErrors.has(error as object)) throw error;
     // Deliberate abort is not a framing failure — surface it unchanged.
     if (isAbortError(error)) throw error;
     if (isParseError(error)) {
@@ -1381,7 +1394,7 @@ async function* parseCommandEvents(
       // neither stall nor replace the primary protocol/transport failure.
       if (reader) {
         cancelResponseReader(reader);
-      } else {
+      } else if (cleanupStream) {
         cancelResponseStream(cleanupStream);
       }
     }

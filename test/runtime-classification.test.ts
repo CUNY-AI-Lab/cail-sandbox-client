@@ -244,6 +244,90 @@ async function executeToEvents(
   return events;
 }
 
+test("guards and snapshots the SSE response body accessor exactly once", async () => {
+  for (const runtime of runtimes) {
+    const primary = new Error("private response body accessor sentinel");
+    let throwingReads = 0;
+    const throwingResponse = new Response(null, { headers: sseHeaders() });
+    Object.defineProperty(throwingResponse, "body", {
+      get() {
+        throwingReads += 1;
+        throw primary;
+      },
+    });
+
+    const error = await executeToError(runtime, throwingResponse);
+    expect(error).toBeInstanceOf(runtime.ErrorClass);
+    expect(error).toMatchObject({
+      code: "stream_transport_error",
+      status: 200,
+      requestId,
+      shouldRetry: false,
+      cause: primary,
+    });
+    expect((error as Error).message).toBe("Command stream transport failed.");
+    expect((error as Error).message).not.toContain("sentinel");
+    expect(throwingReads).toBe(1);
+
+    const callerCreated = new runtime.ErrorClass(
+      "caller_created",
+      "private caller-created typed sentinel",
+      418,
+    );
+    let typedReads = 0;
+    const typedThrowingResponse = new Response(null, {
+      headers: sseHeaders(),
+    });
+    Object.defineProperty(typedThrowingResponse, "body", {
+      get() {
+        typedReads += 1;
+        throw callerCreated;
+      },
+    });
+
+    const typedError = await executeToError(runtime, typedThrowingResponse);
+    expect(typedError).not.toBe(callerCreated);
+    expect(typedError).toBeInstanceOf(runtime.ErrorClass);
+    expect(typedError).toMatchObject({
+      code: "stream_transport_error",
+      status: 200,
+      requestId,
+      shouldRetry: false,
+      cause: callerCreated,
+    });
+    expect((typedError as Error).message).toBe(
+      "Command stream transport failed.",
+    );
+    expect((typedError as Error).message).not.toContain("sentinel");
+    expect(typedReads).toBe(1);
+
+    let successfulReads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'event: exit\ndata: {"exit_code":0}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    const singleReadResponse = new Response(null, { headers: sseHeaders() });
+    Object.defineProperty(singleReadResponse, "body", {
+      get() {
+        successfulReads += 1;
+        if (successfulReads > 1) throw primary;
+        return body;
+      },
+    });
+
+    expect(await executeToEvents(runtime, singleReadResponse)).toEqual([
+      { type: "exit", exitCode: 0 },
+    ]);
+    expect(successfulReads).toBe(1);
+  }
+});
+
 test("rejects malformed SSE UTF-8, including split invalid sequences", async () => {
   const encoder = new TextEncoder();
   const prefix = encoder.encode(
