@@ -214,9 +214,24 @@
         },
         "responses": {
           "200": {
-            "description": "Base64 stdout/stderr followed by exactly one exit or error SSE terminal",
+            "description": "CAIL SSE stream. stdout and stderr data are exact JSON objects with one canonical base64 data property. Exactly one exit or error terminal follows all output.",
+            "x-cail-sse-events": {
+              "stdout": { "$ref": "#/components/schemas/ExecOutputEvent" },
+              "stderr": { "$ref": "#/components/schemas/ExecOutputEvent" },
+              "exit": { "$ref": "#/components/schemas/ExecExitEvent" },
+              "error": { "$ref": "#/components/schemas/ExecErrorEvent" }
+            },
             "content": {
-              "text/event-stream": { "schema": { "type": "string" } }
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Each stdout or stderr SSE data field is JSON.stringify({data: base64Bytes}), never bare base64. Exit data is {\"exit_code\":integer}; error data is the bounded CAIL error event.",
+                  "examples": [
+                    "event: stdout\ndata: {\"data\":\"aGVsbG8K\"}\n\nevent: stderr\ndata: {\"data\":\"d2FybmluZwo=\"}\n\nevent: exit\ndata: {\"exit_code\":0}\n\n",
+                    "event: error\ndata: {\"code\":\"exec_error\",\"message\":\"The sandbox command failed.\",\"request_id\":\"11111111-1111-4111-8111-111111111111\"}\n\n"
+                  ]
+                }
+              }
             }
           },
           "default": { "$ref": "#/components/responses/Error" }
@@ -510,6 +525,37 @@
         "properties": {
           "command": { "type": "string", "minLength": 1, "maxLength": 16384 },
           "session_id": { "type": "string", "format": "uuid" }
+        },
+        "additionalProperties": false
+      },
+      "ExecOutputEvent": {
+        "type": "object",
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "description": "Canonical RFC 4648 base64 for one stdout or stderr byte chunk. Empty chunks use the empty string."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExecExitEvent": {
+        "type": "object",
+        "required": ["exit_code"],
+        "properties": {
+          "exit_code": { "type": "integer" }
+        },
+        "additionalProperties": false
+      },
+      "ExecErrorEvent": {
+        "type": "object",
+        "required": ["code", "message", "request_id"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "request_id": { "type": "string", "format": "uuid" }
         },
         "additionalProperties": false
       },

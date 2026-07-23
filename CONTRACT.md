@@ -1,7 +1,7 @@
 # CAIL Sandbox client contract
 
 Status: reviewed against `cail-sandbox-service`
-`75d09b40725f977e299d4696e9a50621603cdd64`.
+`3c1be3d3ed8bd43adf08803a4cb8df8195cf3daa`.
 
 ## Owned boundary
 
@@ -73,7 +73,10 @@ Typed server errors require the exact nested CAIL envelope, both equal request
 ID headers, `application/json`, and lowercase `x-should-retry`. Malformed
 authority responses fail closed. The client performs no automatic retries.
 
-SSE accepts base64 `stdout`/`stderr` followed by exactly one `exit` or `error`.
+SSE accepts exact JSON `{ "data": "<base64>" }` objects for
+`stdout`/`stderr`, followed by exactly one JSON `exit` or `error`. Bare base64
+is the upstream Cloudflare Bridge wire shape and is not accepted at the CAIL
+public boundary.
 The terminal is withheld until EOF. Unknown, malformed, duplicate,
 post-terminal, oversized, and unterminated streams are rejected. A transport
 failure or abort can leave the remote outcome ambiguous.
@@ -82,7 +85,7 @@ failure or abort can leave the remote outcome ambiguous.
 
 The packaged OpenAPI is byte-identical to the accepted service artifact and
 has SHA-256
-`f0e117af9257b70a6e31cbd9dea44175f8a8164b088a780854089b8c6ba11b29`.
+`98cf7fc74586a8320b9b974657ad2c349885583a67a19596729264350f218cb1`.
 Package-local checks pin the digest and compare a sibling service checkout when
 available.
 

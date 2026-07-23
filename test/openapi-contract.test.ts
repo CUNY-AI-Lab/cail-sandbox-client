@@ -5,7 +5,7 @@ import OPENAPI from "../contract/sandbox-openapi.json";
 import PACKAGE from "../package.json";
 
 const CONTRACT_SHA256 =
-  "f0e117af9257b70a6e31cbd9dea44175f8a8164b088a780854089b8c6ba11b29";
+  "98cf7fc74586a8320b9b974657ad2c349885583a67a19596729264350f218cb1";
 
 test("pins the reviewed Sandbox service OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -141,4 +141,20 @@ test("contract exposes aggregate and immutable settled usage", () => {
     minimum: 0,
     maximum: Number.MAX_SAFE_INTEGER,
   });
+});
+
+test("contract fixes one strict JSON shape for command output events", () => {
+  const response =
+    OPENAPI.paths["/sandbox/v1/sandbox/{id}/exec"].post.responses["200"];
+  expect(response["x-cail-sse-events"].stdout).toEqual({
+    $ref: "#/components/schemas/ExecOutputEvent",
+  });
+  expect(OPENAPI.components.schemas.ExecOutputEvent).toMatchObject({
+    type: "object",
+    required: ["data"],
+    additionalProperties: false,
+  });
+  expect(
+    response.content["text/event-stream"].schema.description,
+  ).toContain("never bare base64");
 });
