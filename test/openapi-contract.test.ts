@@ -5,7 +5,7 @@ import OPENAPI from "../contract/sandbox-openapi.json";
 import PACKAGE from "../package.json";
 
 const CONTRACT_SHA256 =
-  "d4a9179e1b57e345763ef505abc4cbc5f05be7dbbca5673edd2a7a159bdcad80";
+  "50458eba352ce01a776519e43f1ff7fadacf4d7ad8ca309aefdb649fc76e4591";
 
 test("pins the reviewed Sandbox service OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -14,10 +14,12 @@ test("pins the reviewed Sandbox service OpenAPI artifact", () => {
   );
   expect(OPENAPI.openapi).toBe("3.1.1");
   expect(OPENAPI.info.version).toBe("0.1.0");
-  const service = new URL(
-    "../../cail-sandbox-service/contract/openapi.json",
-    import.meta.url,
-  );
+  const service =
+    process.env.CAIL_SANDBOX_SERVICE_OPENAPI ??
+    new URL(
+      "../../cail-sandbox-service/contract/openapi.json",
+      import.meta.url,
+    );
   if (existsSync(service)) expect(bytes).toEqual(readFileSync(service));
 });
 

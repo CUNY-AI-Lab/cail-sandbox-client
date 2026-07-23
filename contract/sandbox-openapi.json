@@ -3,7 +3,7 @@
   "info": {
     "title": "CAIL Sandbox Service",
     "version": "0.1.0",
-    "description": "Subject-owned, short-lived offline code execution backed by the official Cloudflare Sandbox Bridge."
+    "description": "Subject-owned, short-lived offline code execution backed directly by the official Cloudflare Sandbox SDK."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [{ "url": "/" }],
@@ -585,7 +585,10 @@
             ]
           },
           "param": { "type": ["string", "null"] },
-          "code": { "type": "string" },
+          "code": {
+            "type": "string",
+            "description": "Stable CAIL machine code. Direct Sandbox SDK failures use sandbox_runtime_error; observed caller cancellation uses request_cancelled."
+          },
           "cail": {
             "type": "object",
             "additionalProperties": {
