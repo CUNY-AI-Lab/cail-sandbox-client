@@ -56,6 +56,9 @@ export type CommandTerminalEvent =
   | { type: "exit"; exitCode: number }
   | { type: "error"; code: string; message: string; requestId: string };
 
+const liveCailSandboxErrors = new WeakSet<object>();
+const liveResponseBodyReadErrors = new WeakSet<object>();
+
 export class CailSandboxError extends Error {
   constructor(
     readonly code: string,
@@ -71,6 +74,7 @@ export class CailSandboxError extends Error {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "CailSandboxError";
     Object.setPrototypeOf(this, CailSandboxError.prototype);
+    liveCailSandboxErrors.add(this);
   }
 }
 
@@ -197,6 +201,10 @@ const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(
+  DOMException.prototype,
+  "name",
+)?.get;
 const ERROR_TYPES = new Set([
   "invalid_request_error",
   "authentication_error",
@@ -217,6 +225,62 @@ function hasOnlyKeys(
   allowed: readonly string[],
 ) {
   return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function ownDataValue(value: unknown, key: PropertyKey): unknown {
+  if (
+    (typeof value !== "object" || value === null) &&
+    typeof value !== "function"
+  ) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasPrototype(
+  value: unknown,
+  expected: object,
+  maximumDepth = 8,
+): boolean {
+  if (
+    (typeof value !== "object" || value === null) &&
+    typeof value !== "function"
+  ) {
+    return false;
+  }
+  try {
+    let current: object | null = Object.getPrototypeOf(value);
+    for (let depth = 0; current !== null && depth < maximumDepth; depth += 1) {
+      if (current === expected) return true;
+      current = Object.getPrototypeOf(current);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function safeCorrelationErrorMessage(error: unknown): string | undefined {
+  if (
+    !hasPrototype(error, TypeError.prototype, 1) &&
+    !hasPrototype(error, Error.prototype, 1)
+  ) {
+    return undefined;
+  }
+  const message = ownDataValue(error, "message");
+  return typeof message === "string" &&
+    message.length > 0 &&
+    message.length <= 256 &&
+    !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(message)
+    ? message
+    : undefined;
 }
 
 function credentialHeaders(credential: CailSandboxCredential) {
@@ -429,6 +493,7 @@ class ResponseBodyReadError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ResponseBodyReadError";
+    liveResponseBodyReadErrors.add(this);
   }
 }
 
@@ -469,7 +534,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       text += decoder.decode(value, { stream: true });
     }
   } catch (cause) {
-    if (cause instanceof ResponseBodyReadError) throw cause;
+    if (liveResponseBodyReadErrors.has(cause as object)) throw cause;
     cancelResponseReader(reader);
     throw new ResponseBodyReadError(
       "Sandbox JSON response could not be read.",
@@ -888,9 +953,8 @@ export function createCailSandboxClient(
       } catch (error) {
         throw new CailSandboxError(
           "invalid_correlation",
-          error instanceof Error
-            ? error.message
-            : "Invalid CAIL correlation object.",
+          safeCorrelationErrorMessage(error) ??
+            "Invalid CAIL correlation object.",
           0,
         );
       }
@@ -1151,11 +1215,32 @@ export function createCailSandboxClient(
 }
 
 function isAbortError(error: unknown): boolean {
+  const ownName = ownDataValue(error, "name");
+  if (
+    (ownName === "AbortError" || ownName === "TimeoutError") &&
+    hasPrototype(error, Error.prototype)
+  ) {
+    return true;
+  }
+  if (
+    DOM_EXCEPTION_NAME_GETTER === undefined ||
+    !hasPrototype(error, DOMException.prototype, 1)
+  ) {
+    return false;
+  }
+  try {
+    const name = DOM_EXCEPTION_NAME_GETTER.call(error);
+    return name === "AbortError" || name === "TimeoutError";
+  } catch {
+    return false;
+  }
+}
+
+function isParseError(error: unknown): boolean {
   return (
-    typeof error === "object" &&
-    error !== null &&
-    ((error as { name?: unknown }).name === "AbortError" ||
-      (error as { name?: unknown }).name === "TimeoutError")
+    ownDataValue(error, "name") === "ParseError" &&
+    typeof ownDataValue(error, "type") === "string" &&
+    hasPrototype(error, ParseError.prototype)
   );
 }
 
@@ -1297,10 +1382,10 @@ async function* parseCommandEvents(
       }
     }
   } catch (error) {
-    if (error instanceof CailSandboxError) throw error;
+    if (liveCailSandboxErrors.has(error as object)) throw error;
     // Deliberate abort is not a framing failure — surface it unchanged.
     if (isAbortError(error)) throw error;
-    if (error instanceof ParseError) {
+    if (isParseError(error)) {
       throw invalidStream("Command stream framing was invalid.", error);
     }
     throw responseError(

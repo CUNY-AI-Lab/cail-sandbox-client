@@ -1,6 +1,8 @@
 import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
 import { EventSourceParserStream, ParseError } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
+const liveCailSandboxErrors = new WeakSet();
+const liveResponseBodyReadErrors = new WeakSet();
 export class CailSandboxError extends Error {
     code;
     status;
@@ -22,6 +24,7 @@ export class CailSandboxError extends Error {
         this.cause = cause;
         this.name = "CailSandboxError";
         Object.setPrototypeOf(this, CailSandboxError.prototype);
+        liveCailSandboxErrors.add(this);
     }
 }
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -33,6 +36,7 @@ const MAX_OUTPUT_EVENT_BASE64_CHARS = 4 * Math.ceil(MAX_OUTPUT_EVENT_BYTES / 3);
 const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get;
 const ERROR_TYPES = new Set([
     "invalid_request_error",
     "authentication_error",
@@ -48,6 +52,52 @@ function isRecord(value) {
 }
 function hasOnlyKeys(value, allowed) {
     return Object.keys(value).every((key) => allowed.includes(key));
+}
+function ownDataValue(value, key) {
+    if ((typeof value !== "object" || value === null) &&
+        typeof value !== "function") {
+        return undefined;
+    }
+    try {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor && "value" in descriptor
+            ? descriptor.value
+            : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function hasPrototype(value, expected, maximumDepth = 8) {
+    if ((typeof value !== "object" || value === null) &&
+        typeof value !== "function") {
+        return false;
+    }
+    try {
+        let current = Object.getPrototypeOf(value);
+        for (let depth = 0; current !== null && depth < maximumDepth; depth += 1) {
+            if (current === expected)
+                return true;
+            current = Object.getPrototypeOf(current);
+        }
+    }
+    catch {
+        return false;
+    }
+    return false;
+}
+function safeCorrelationErrorMessage(error) {
+    if (!hasPrototype(error, TypeError.prototype, 1) &&
+        !hasPrototype(error, Error.prototype, 1)) {
+        return undefined;
+    }
+    const message = ownDataValue(error, "message");
+    return typeof message === "string" &&
+        message.length > 0 &&
+        message.length <= 256 &&
+        !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(message)
+        ? message
+        : undefined;
 }
 function credentialHeaders(credential) {
     const candidate = credential;
@@ -186,6 +236,7 @@ class ResponseBodyReadError extends Error {
     constructor(message, options) {
         super(message, options);
         this.name = "ResponseBodyReadError";
+        liveResponseBodyReadErrors.add(this);
     }
 }
 async function readBoundedJson(response) {
@@ -219,7 +270,7 @@ async function readBoundedJson(response) {
         }
     }
     catch (cause) {
-        if (cause instanceof ResponseBodyReadError)
+        if (liveResponseBodyReadErrors.has(cause))
             throw cause;
         cancelResponseReader(reader);
         throw new ResponseBodyReadError("Sandbox JSON response could not be read.", { cause });
@@ -534,9 +585,8 @@ export function createCailSandboxClient(options) {
                 }
             }
             catch (error) {
-                throw new CailSandboxError("invalid_correlation", error instanceof Error
-                    ? error.message
-                    : "Invalid CAIL correlation object.", 0);
+                throw new CailSandboxError("invalid_correlation", safeCorrelationErrorMessage(error) ??
+                    "Invalid CAIL correlation object.", 0);
             }
         }
         const callerSignal = callOptions?.signal ?? init.signal;
@@ -661,10 +711,27 @@ export function createCailSandboxClient(options) {
     };
 }
 function isAbortError(error) {
-    return (typeof error === "object" &&
-        error !== null &&
-        (error.name === "AbortError" ||
-            error.name === "TimeoutError"));
+    const ownName = ownDataValue(error, "name");
+    if ((ownName === "AbortError" || ownName === "TimeoutError") &&
+        hasPrototype(error, Error.prototype)) {
+        return true;
+    }
+    if (DOM_EXCEPTION_NAME_GETTER === undefined ||
+        !hasPrototype(error, DOMException.prototype, 1)) {
+        return false;
+    }
+    try {
+        const name = DOM_EXCEPTION_NAME_GETTER.call(error);
+        return name === "AbortError" || name === "TimeoutError";
+    }
+    catch {
+        return false;
+    }
+}
+function isParseError(error) {
+    return (ownDataValue(error, "name") === "ParseError" &&
+        typeof ownDataValue(error, "type") === "string" &&
+        hasPrototype(error, ParseError.prototype));
 }
 // The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
@@ -786,12 +853,12 @@ async function* parseCommandEvents(response) {
         }
     }
     catch (error) {
-        if (error instanceof CailSandboxError)
+        if (liveCailSandboxErrors.has(error))
             throw error;
         // Deliberate abort is not a framing failure — surface it unchanged.
         if (isAbortError(error))
             throw error;
-        if (error instanceof ParseError) {
+        if (isParseError(error)) {
             throw invalidStream("Command stream framing was invalid.", error);
         }
         throw responseError(response, "stream_transport_error", "Command stream transport failed.", "server_error", error);
