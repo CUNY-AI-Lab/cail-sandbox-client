@@ -1,7 +1,7 @@
 # CAIL Sandbox client contract
 
 Status: reviewed against `cail-sandbox-service`
-`3c1be3d3ed8bd43adf08803a4cb8df8195cf3daa`.
+`82349f70016a4e217a39379b3c0f8803774bf378`.
 
 ## Owned boundary
 
@@ -69,6 +69,11 @@ timestamps, dates, quantities, response keys, media types, success statuses,
 and lease-ID mismatches. It accepts only HTTPS, with HTTP restricted to exact
 loopback hosts, and rejects redirects.
 
+File phase authorization is service-owned: `writeFile` is ready-only, while
+`readFile` is allowed in ready or terminal. Both fail with `409 operation_state`
+while executing or ambiguous; terminal writes also fail. The client forwards
+these strict service outcomes without adding a local operation-state model.
+
 Typed server errors require the exact nested CAIL envelope, both equal request
 ID headers, `application/json`, and lowercase `x-should-retry`. Malformed
 authority responses fail closed. The client performs no automatic retries.
@@ -85,7 +90,7 @@ failure or abort can leave the remote outcome ambiguous.
 
 The packaged OpenAPI is byte-identical to the accepted service artifact and
 has SHA-256
-`98cf7fc74586a8320b9b974657ad2c349885583a67a19596729264350f218cb1`.
+`d4a9179e1b57e345763ef505abc4cbc5f05be7dbbca5673edd2a7a159bdcad80`.
 Package-local checks pin the digest and compare a sibling service checkout when
 available.
 

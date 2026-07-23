@@ -250,6 +250,7 @@
       ],
       "get": {
         "operationId": "readFile",
+        "description": "Read session-bound workspace file bytes while the operation is ready or terminal. Executing or ambiguous operations fail with 409 operation_state.",
         "responses": {
           "200": {
             "description": "Raw workspace file bytes",
@@ -264,6 +265,7 @@
       },
       "put": {
         "operationId": "writeFile",
+        "description": "Write session-bound workspace file bytes only while the operation is ready. Executing, terminal, or ambiguous operations fail with 409 operation_state.",
         "requestBody": {
           "required": true,
           "content": {

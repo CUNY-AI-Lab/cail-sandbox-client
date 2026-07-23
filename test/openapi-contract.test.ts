@@ -5,7 +5,7 @@ import OPENAPI from "../contract/sandbox-openapi.json";
 import PACKAGE from "../package.json";
 
 const CONTRACT_SHA256 =
-  "98cf7fc74586a8320b9b974657ad2c349885583a67a19596729264350f218cb1";
+  "d4a9179e1b57e345763ef505abc4cbc5f05be7dbbca5673edd2a7a159bdcad80";
 
 test("pins the reviewed Sandbox service OpenAPI artifact", () => {
   const bytes = readFileSync("contract/sandbox-openapi.json");
@@ -119,6 +119,10 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   expect(OPENAPI.components.responses.Error.headers).toHaveProperty(
     "x-should-retry",
   );
+  expect(file.get.description).toContain("ready or terminal");
+  expect(file.get.description).toContain("409 operation_state");
+  expect(file.put.description).toContain("only while the operation is ready");
+  expect(file.put.description).toContain("409 operation_state");
 });
 
 test("service auth contract requires the canonical RS256 identity JWT", () => {
