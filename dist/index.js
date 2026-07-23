@@ -61,11 +61,17 @@ function credentialHeaders(credential) {
     return { "x-cail-identity-jwt": candidate.token };
 }
 function logResponseCleanupDiagnostic(operation) {
-    console.error({
-        event: "cail_sandbox_client.response_cleanup_failed",
-        error: "response_cleanup_failed",
-        operation,
-    });
+    try {
+        console.error({
+            event: "cail_sandbox_client.response_cleanup_failed",
+            error: "response_cleanup_failed",
+            operation,
+        });
+    }
+    catch {
+        // Cleanup reporting has no lower diagnostic boundary. It must never
+        // replace the request failure or create an unhandled promise rejection.
+    }
 }
 function cancelResponseBody(response) {
     try {

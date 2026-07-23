@@ -344,6 +344,56 @@ test("preserves malformed UTF-8 as the primary when cancellation rejects", async
   }
 });
 
+test("contains a throwing cleanup diagnostic sink", async () => {
+  const cleanupError = new Error("cleanup rejection");
+  const diagnosticError = new Error("diagnostic sink failure");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {
+    throw diagnosticError;
+  });
+  try {
+    const malformed = new Uint8Array([
+      ...new TextEncoder().encode('{"value":"'),
+      0xff,
+      ...new TextEncoder().encode('"}'),
+    ]);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(malformed);
+      },
+      cancel() {
+        return Promise.reject(cleanupError);
+      },
+    });
+    const error = await client(async () => {
+      return new Response(body, {
+        headers: { "content-type": "application/json" },
+      });
+    })
+      .openapi(jwt)
+      .catch((error) => error);
+    await Bun.sleep(10);
+
+    expect(error).toMatchObject({
+      code: "invalid_response",
+      cause: {
+        name: "ResponseBodyReadError",
+        cause: { name: "TypeError" },
+      },
+    });
+    expect(error.cause.cause).not.toBe(cleanupError);
+    expect(error.cause.cause).not.toBe(diagnosticError);
+    expect(body.locked).toBe(false);
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+    expect(unhandled).toEqual([]);
+  } finally {
+    diagnostic.mockRestore();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("accepts an exact-limit JSON response", async () => {
   const empty = JSON.stringify({ padding: "" });
   const body = JSON.stringify({
