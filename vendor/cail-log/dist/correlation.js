@@ -10,6 +10,23 @@ const TRACESTATE_MAX_MEMBERS = 32;
 const RANDOM_ID_ATTEMPTS = 8;
 const TRACESTATE_KEY_RE = /^(?:[a-z][a-z0-9_*\/-]{0,255}|[a-z0-9][a-z0-9_*\/-]{0,240}@[a-z][a-z0-9_*\/-]{0,13})$/;
 const TRACESTATE_VALUE_RE = /^[\x20-\x2b\x2d-\x3c\x3e-\x7e]{0,255}[\x21-\x2b\x2d-\x3c\x3e-\x7e]$/;
+function snapshotCorrelation(value) {
+    try {
+        if (!isPlainObject(value)) {
+            throw new TypeError("invalid correlation");
+        }
+        return Object.freeze({
+            traceId: value["trace_id"],
+            spanId: value["span_id"],
+            traceFlags: value["trace_flags"],
+            requestId: value["request_id"],
+            tracestate: value["tracestate"],
+        });
+    }
+    catch {
+        throw new TypeError("cail-log: correlation must be a readable plain object");
+    }
+}
 function sanitizeTracestate(raw) {
     if (typeof raw !== "string")
         return undefined;
@@ -79,6 +96,13 @@ export function correlationFromHeaders(source, options = {}) {
     let inboundTraceFlags;
     let requestId;
     let tracestate;
+    let sampled;
+    try {
+        sampled = options.sampled;
+    }
+    catch {
+        // A hostile options reader behaves like an omitted recording decision.
+    }
     let headers = null;
     try {
         headers = headersOf(source);
@@ -121,8 +145,8 @@ export function correlationFromHeaders(source, options = {}) {
     const correlation = {
         trace_id: traceId ?? randomHex(16),
         span_id: randomHex(8),
-        trace_flags: typeof options.sampled === "boolean"
-            ? options.sampled
+        trace_flags: typeof sampled === "boolean"
+            ? sampled
                 ? 1
                 : 0
             : (inboundTraceFlags ?? 0),
@@ -133,28 +157,31 @@ export function correlationFromHeaders(source, options = {}) {
     return correlation;
 }
 export function outboundCorrelationHeaders(correlation) {
-    if (!isPlainObject(correlation)) {
-        throw new TypeError("cail-log: correlation must be an object");
-    }
-    const { trace_id, span_id, trace_flags, request_id, tracestate } = correlation;
-    if (!HEX_TRACE_RE.test(trace_id) || trace_id === ZERO_TRACE) {
+    const { traceId, spanId, traceFlags, requestId, tracestate, } = snapshotCorrelation(correlation);
+    if (typeof traceId !== "string" ||
+        !HEX_TRACE_RE.test(traceId) ||
+        traceId === ZERO_TRACE) {
         throw new TypeError("cail-log: trace_id must be 32 lowercase hex chars, not all-zero");
     }
-    if (!HEX_SPAN_RE.test(span_id) || span_id === ZERO_SPAN) {
+    if (typeof spanId !== "string" ||
+        !HEX_SPAN_RE.test(spanId) ||
+        spanId === ZERO_SPAN) {
         throw new TypeError("cail-log: span_id must be 16 lowercase hex chars, not all-zero");
     }
-    if (!REQUEST_ID_RE.test(request_id)) {
-        throw new TypeError("cail-log: request_id must be a lowercase UUID v4");
+    if (typeof requestId !== "string" || !REQUEST_ID_RE.test(requestId)) {
+        throw new TypeError("cail-log: request_id must be a lowercase UUID v4 or v7");
     }
-    if (trace_flags !== 0 && trace_flags !== 1) {
+    if (traceFlags !== 0 && traceFlags !== 1) {
         throw new TypeError("cail-log: trace_flags must be 0 or 1");
     }
-    if (tracestate !== undefined && sanitizeTracestate(tracestate) !== tracestate) {
+    if (tracestate !== undefined &&
+        (typeof tracestate !== "string" ||
+            sanitizeTracestate(tracestate) !== tracestate)) {
         throw new TypeError("cail-log: tracestate must be a structurally valid W3C tracestate list");
     }
     const headers = {
-        [TRACEPARENT_HEADER]: `00-${trace_id}-${span_id}-0${trace_flags}`,
-        [CAIL_REQUEST_ID_HEADER]: request_id,
+        [TRACEPARENT_HEADER]: `00-${traceId}-${spanId}-0${traceFlags}`,
+        [CAIL_REQUEST_ID_HEADER]: requestId,
     };
     if (tracestate !== undefined)
         headers[TRACESTATE_HEADER] = tracestate;

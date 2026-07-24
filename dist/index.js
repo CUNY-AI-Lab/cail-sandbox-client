@@ -37,10 +37,10 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get;
 const CAIL_LOG_CORRELATION_MESSAGES = new Set([
-    "cail-log: correlation must be an object",
+    "cail-log: correlation must be a readable plain object",
     "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
     "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
-    "cail-log: request_id must be a lowercase UUID v4",
+    "cail-log: request_id must be a lowercase UUID v4 or v7",
     "cail-log: trace_flags must be 0 or 1",
     "cail-log: tracestate must be a structurally valid W3C tracestate list",
 ]);

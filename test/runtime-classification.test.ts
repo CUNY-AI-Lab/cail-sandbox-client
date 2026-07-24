@@ -782,7 +782,9 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(error.message).toBe("Invalid CAIL correlation object.");
+    expect(error.message).toBe(
+      "cail-log: correlation must be a readable plain object",
+    );
     expect(error.message).not.toContain("sentinel");
     expect(rejectedPrototypeReads).toBe(0);
     expect(fetchCalls).toBe(0);
@@ -808,7 +810,9 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(forgedError.message).toBe("Invalid CAIL correlation object.");
+    expect(forgedError.message).toBe(
+      "cail-log: correlation must be a readable plain object",
+    );
     expect(forgedError.message).not.toContain("sentinel");
     expect(fetchCalls).toBe(0);
   }
@@ -818,7 +822,7 @@ test("retains only the vendored static correlation validation messages", async (
   const cases = [
     [
       null,
-      "cail-log: correlation must be an object",
+      "cail-log: correlation must be a readable plain object",
     ],
     [
       { ...validCorrelation, trace_id: "bad" },
@@ -830,7 +834,7 @@ test("retains only the vendored static correlation validation messages", async (
     ],
     [
       { ...validCorrelation, request_id: "bad" },
-      "cail-log: request_id must be a lowercase UUID v4",
+      "cail-log: request_id must be a lowercase UUID v4 or v7",
     ],
     [
       { ...validCorrelation, trace_flags: 2 },

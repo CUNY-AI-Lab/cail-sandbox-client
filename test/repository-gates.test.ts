@@ -36,8 +36,13 @@ test("vendors the exact accepted cail-log source package", () => {
   const provenance = JSON.parse(
     readFileSync("vendor/cail-log.provenance.json", "utf8"),
   ) as {
+    manifestVersion: string;
+    artifactKind: string;
+    publishedVersionClaim: boolean;
     sourceCommit: string;
+    sourceTree: string;
     tarball: string;
+    tarballBytes: number;
     tarballSha256: string;
     contractSha256: string;
   };
@@ -45,18 +50,37 @@ test("vendors the exact accepted cail-log source package", () => {
   const vendoredPackage = JSON.parse(
     readFileSync("vendor/cail-log/package.json", "utf8"),
   ) as { name?: string; version?: string };
-  expect(provenance.sourceCommit).toBe(
-    "482b2a102fddac589d6db8a03cbea171df819872",
-  );
-  expect(provenance.contractSha256).toBe(
-    "3bf46b9810bbe06d8311f28d6491c78c02455a07b27f0ff46dfa5843478ee0ad",
-  );
+  expect(provenance).toMatchObject({
+    manifestVersion: "0.6.0",
+    artifactKind: "unpublished-source-build",
+    publishedVersionClaim: false,
+    sourceCommit: "cb6ffc0cfd4cb544639cbf288ff6eb24c7027e98",
+    sourceTree: "618c4bdfae0effadbe23cfd6c4dfb1fcf6440697",
+    tarball:
+      "cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
+    tarballBytes: 50_269,
+    tarballSha256:
+      "8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215",
+    contractSha256:
+      "4289398fe59affe1181789d111b779365fed951290ad07dd687061a681d299b1",
+  });
+  expect(tarball.byteLength).toBe(provenance.tarballBytes);
   expect(createHash("sha256").update(tarball).digest("hex")).toBe(
     provenance.tarballSha256,
   );
+  const archivedContract = Bun.spawnSync([
+    "tar",
+    "-xOf",
+    `vendor/${provenance.tarball}`,
+    "package/contract/operational-event-v2.json",
+  ]);
+  expect(archivedContract.exitCode).toBe(0);
+  expect(
+    createHash("sha256").update(archivedContract.stdout).digest("hex"),
+  ).toBe(provenance.contractSha256);
   expect(vendoredPackage).toMatchObject({
     name: "@cuny-ai-lab/cail-log",
-    version: "0.6.0",
+    version: provenance.manifestVersion,
   });
   const extractedFiles = [
     "package.json",

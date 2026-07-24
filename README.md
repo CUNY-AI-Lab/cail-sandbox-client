@@ -113,11 +113,15 @@ with a sibling service checkout when present, or verifies the pinned digest
 standalone. Set `CAIL_SANDBOX_SERVICE_OPENAPI` to check another explicit file.
 
 The package is not published. Its correlation implementation and public
-re-exports come directly from the vendored `cail-log` 0.6.0 distribution
-generated from accepted source revision
-`482b2a102fddac589d6db8a03cbea171df819872`, with tarball SHA-256
-`7c638f58dd8e38736200050f00288cae2f9773011f00d8cf0ec22919bc52fa9e`.
-It has no registry or consumer-override dependency on `cail-log`.
+re-exports come directly from the source- and hash-qualified, unpublished
+`cail-log` build at revision
+`cb6ffc0cfd4cb544639cbf288ff6eb24c7027e98` (tree
+`618c4bdfae0effadbe23cfd6c4dfb1fcf6440697`), with tarball SHA-256
+`8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215`.
+The upstream manifest still says `0.6.0`; that is provenance, not a claim that
+this behavior was published as `0.6.0`. An immutable successor release is still
+required before registry consumers can adopt the UUIDv7 contract. This package
+has no registry or consumer-override dependency on `cail-log`.
 Consume only an exact reviewed Sandbox-client source commit. Do not interpret
 metadata version `0.1.0` as registry availability.
 

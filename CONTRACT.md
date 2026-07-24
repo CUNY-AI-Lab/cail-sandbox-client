@@ -17,6 +17,12 @@ Lease, session, operation, and file calls add only the capabilities required by
 the OpenAPI. The client never derives a principal or accepts one in request
 JSON.
 
+Request correlation follows the accepted `cail-log` source contract. The public
+helpers adopt and propagate canonical lowercase UUIDv4 and UUIDv7 request IDs;
+other UUID versions, variants, casing, and malformed values are rejected or
+replaced as defined by `cail-log`. Lifecycle calls preserve the accepted request
+ID without reminting it.
+
 ## HTTP surface
 
 | Client call | HTTP operation | Success |

@@ -1,8 +1,12 @@
 {
   "package": "@cuny-ai-lab/cail-log",
-  "version": "0.6.0",
-  "sourceCommit": "482b2a102fddac589d6db8a03cbea171df819872",
-  "tarball": "cuny-ai-lab-cail-log-0.6.0.tgz",
-  "tarballSha256": "7c638f58dd8e38736200050f00288cae2f9773011f00d8cf0ec22919bc52fa9e",
-  "contractSha256": "3bf46b9810bbe06d8311f28d6491c78c02455a07b27f0ff46dfa5843478ee0ad"
+  "manifestVersion": "0.6.0",
+  "artifactKind": "unpublished-source-build",
+  "publishedVersionClaim": false,
+  "sourceCommit": "cb6ffc0cfd4cb544639cbf288ff6eb24c7027e98",
+  "sourceTree": "618c4bdfae0effadbe23cfd6c4dfb1fcf6440697",
+  "tarball": "cuny-ai-lab-cail-log-0.6.0-cb6ffc0-8689422456eb4b7c.tgz",
+  "tarballBytes": 50269,
+  "tarballSha256": "8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215",
+  "contractSha256": "4289398fe59affe1181789d111b779365fed951290ad07dd687061a681d299b1"
 }
