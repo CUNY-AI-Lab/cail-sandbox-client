@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 test("CI checks release authority, the contract, committed build, package, and secrets", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   expect(workflow).not.toContain("CAIL_SANDBOX_SERVICE_OPENAPI");
-  expect(workflow).toContain("bun install --frozen-lockfile");
+  expect(workflow).toContain(
+    "bun install --frozen-lockfile --ignore-scripts",
+  );
   expect(workflow).toContain("bun run check");
   expect(workflow).toContain("bun pm pack --dry-run --ignore-scripts");
   expect(workflow).toContain("git diff --exit-code -- dist");
@@ -40,7 +42,17 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
   expect(pkg.scripts?.check?.split(" && ")[0]).toBe(
     "bun run check:release-authority",
   );
+  expect(pkg.scripts?.check).toContain("bun run check:dist");
+  expect(pkg.scripts?.check?.indexOf("bun run check:dist")).toBeLessThan(
+    pkg.scripts?.check?.indexOf("bun run build") ?? -1,
+  );
   expect(pkg.scripts?.prepublishOnly).toContain("bun run check");
+  expect(pkg.scripts?.prepublishOnly).toContain(
+    "bun run check:clean",
+  );
+  expect(pkg.scripts?.prepublishOnly).toContain(
+    "bun run check:release-live",
+  );
   expect(pkg.scripts?.prepublishOnly).toContain(
     "git diff --exit-code -- dist",
   );

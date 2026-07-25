@@ -27,7 +27,7 @@ jobs:
 
       - name: Install frozen dependencies
         working-directory: cail-sandbox-client
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Verify source, tests, build, and pinned contract
         working-directory: cail-sandbox-client

@@ -122,8 +122,13 @@ SHA-256
 has been published.
 
 Run `bun run check:release-authority` before packaging. It rejects version,
-lockfile, receipt, installed-package, or tarball drift. Publishing still
-requires a separately reviewed `v0.1.1` release.
+lockfile, receipt, installed-package, or tarball drift. Publishing also
+requires an ordinary clean Git checkout and a live GitHub Packages preflight
+that confirms the recorded `0.1.0` version identity and the absence of
+`0.1.1`. The release workflow authenticates Bun through its documented
+`NPM_CONFIG_TOKEN` environment variable, so it does not create credential
+files or dirty the publication checkout. Publishing still requires a
+separately reviewed `v0.1.1` release.
 
 This client creates no Cloudflare resources and contains no deployment command.
 Isolated service deployment and end-to-end resource cleanup belong to the
