@@ -8,6 +8,10 @@ import {
   CailSandboxError as SourceCailSandboxError,
   createCailSandboxClient as createSourceClient,
 } from "../src/index";
+import {
+  CailSandboxError as PackageCailSandboxError,
+  createCailSandboxClient as createPackageClient,
+} from "@cuny-ai-lab/cail-sandbox-client";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
 const requestId = "33333333-3333-4333-8333-333333333333";
@@ -40,6 +44,11 @@ const runtimes = [
     label: "committed dist",
     create: createDistClient,
     ErrorClass: DistCailSandboxError,
+  },
+  {
+    label: "package export",
+    create: createPackageClient,
+    ErrorClass: PackageCailSandboxError,
   },
 ] as const;
 
@@ -740,6 +749,36 @@ test("rejects forged AbortError, TimeoutError, and ParseError authority", async 
       expect(tracked.cancelCalls()).toBe(1);
       expect(tracked.releaseCalls()).toBe(1);
     }
+  }
+});
+
+test("keeps private stream transport causes exact and non-enumerable", async () => {
+  for (const runtime of runtimes) {
+    const primary = {
+      authorization: "Bearer private-stream-token",
+      responseBody: "private student response body",
+    };
+    const tracked = sseResponseForError(primary, "resolve");
+    const error = await executeToError(runtime, tracked.response);
+
+    expect(error).toBeInstanceOf(runtime.ErrorClass);
+    expect(error).toMatchObject({
+      code: "stream_transport_error",
+      status: 200,
+      requestId,
+      shouldRetry: false,
+    });
+    expect((error as Error).cause).toBe(primary);
+    expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
+      value: primary,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    expect(JSON.stringify(error)).not.toContain("private-stream-token");
+    expect(JSON.stringify(error)).not.toContain("private student response body");
+    expect(tracked.cancelCalls()).toBe(1);
+    expect(tracked.releaseCalls()).toBe(1);
   }
 });
 

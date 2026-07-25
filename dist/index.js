@@ -11,7 +11,6 @@ export class CailSandboxError extends Error {
     details;
     requestId;
     shouldRetry;
-    cause;
     constructor(code, message, status, type = "unknown_error", param = null, details = {}, requestId = null, shouldRetry = null, cause) {
         super(message, cause === undefined ? undefined : { cause });
         this.code = code;
@@ -21,7 +20,6 @@ export class CailSandboxError extends Error {
         this.details = details;
         this.requestId = requestId;
         this.shouldRetry = shouldRetry;
-        this.cause = cause;
         this.name = "CailSandboxError";
         Object.setPrototypeOf(this, CailSandboxError.prototype);
     }

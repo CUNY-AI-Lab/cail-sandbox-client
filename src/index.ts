@@ -63,6 +63,8 @@ const liveResponseBodyReadErrors = new WeakSet<object>();
 const liveEventSourceParseErrors = new WeakSet<object>();
 
 export class CailSandboxError extends Error {
+  declare readonly cause?: unknown | undefined;
+
   constructor(
     readonly code: string,
     message: string,
@@ -72,7 +74,7 @@ export class CailSandboxError extends Error {
     readonly details: Record<string, unknown> = {},
     readonly requestId: string | null = null,
     readonly shouldRetry: boolean | null = null,
-    readonly cause?: unknown,
+    cause?: unknown | undefined,
   ) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "CailSandboxError";
