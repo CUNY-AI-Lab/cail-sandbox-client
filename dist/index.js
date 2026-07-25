@@ -1,6 +1,6 @@
-import { outboundCorrelationHeaders, } from "../vendor/cail-log/dist/index.js";
+import { outboundCorrelationHeaders, } from "@cuny-ai-lab/cail-log";
 import { EventSourceParserStream, } from "eventsource-parser/stream";
-export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
+export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
 const liveResponseBodyReadErrors = new WeakSet();
 const liveEventSourceParseErrors = new WeakSet();
 export class CailSandboxError extends Error {

@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify package contents
         working-directory: cail-sandbox-client
-        run: bun pm pack --dry-run
+        run: bun pm pack --dry-run --ignore-scripts
 
       - name: Scan repository history for secrets
         working-directory: cail-sandbox-client

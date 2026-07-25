@@ -1,6 +1,6 @@
-import { type CailCorrelation } from "../vendor/cail-log/dist/index.js";
-export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "../vendor/cail-log/dist/index.js";
-export type { CailCorrelation, CailHeadersLike, } from "../vendor/cail-log/dist/index.js";
+import { type CailCorrelation } from "@cuny-ai-lab/cail-log";
+export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
+export type { CailCorrelation, CailHeadersLike, } from "@cuny-ai-lab/cail-log";
 export type CailSandboxCredential = {
     kind: "jwt";
     token: string;

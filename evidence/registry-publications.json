@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-07-25T17:28:03Z",
+  "registry": "https://npm.pkg.github.com",
+  "published": {
+    "@cuny-ai-lab/cail-log": {
+      "version": "0.6.0",
+      "packageVersionId": 1066236862,
+      "publishedAt": "2026-07-25T16:40:58Z",
+      "tarballBytes": 50269,
+      "tarballSha1": "632c8a3d74bc4709c23b9636b73471c1291d7679",
+      "tarballSha256": "8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215",
+      "reviewedSourceCommit": "cb6ffc0cfd4cb544639cbf288ff6eb24c7027e98",
+      "reviewedSourceTree": "618c4bdfae0effadbe23cfd6c4dfb1fcf6440697",
+      "publishedSourceCommit": "7d093f4c4d28367056c5124889a283d5ff9908c4",
+      "publishedSourceTree": "b0150aa34f31de914a9a32493c5abf3bb4d5ad43"
+    },
+    "@cuny-ai-lab/cail-sandbox-client": {
+      "version": "0.1.0",
+      "packageVersionId": 1066310089,
+      "publishedAt": "2026-07-25T17:28:03Z",
+      "tarballBytes": 97671,
+      "tarballSha1": "e344844a09b745e46f4eb5f5ef6e4da8d744e0b8",
+      "tarballSha256": "9a67fa01cdf2ce2b5323a6d2cca75d2b96a8c0e85ab1ce58b1eea6509f393db7",
+      "sourceTag": "v0.1.0",
+      "sourceCommit": "e6926d2c7d425ac27f5a4bd3b81ad2e844574f34",
+      "sourceTree": "d6b8bcde833b8ac300b5401a5d8bc3ffe0ed511a"
+    }
+  },
+  "candidate": {
+    "package": "@cuny-ai-lab/cail-sandbox-client",
+    "version": "0.1.1",
+    "publishedVersionClaim": false,
+    "reason": "compatible release hardening after immutable 0.1.0 publication"
+  }
+}

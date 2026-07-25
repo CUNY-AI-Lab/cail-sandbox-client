@@ -100,6 +100,8 @@ has SHA-256
 Package-local checks pin the digest and compare a sibling service checkout when
 available.
 
-No migration or persistent-state change is owned here. Rollback means pinning
-the prior exact client source revision. No package is published and no
-Cloudflare resource is created by this repository.
+No migration or persistent-state change is owned here. Sandbox Client `0.1.0`
+and CAIL Log `0.6.0` are published immutable packages. This repository is now a
+`0.1.1` candidate and makes no claim that the successor is published. Rollback
+means pinning published Client `0.1.0`. No Cloudflare resource is created by
+this repository.

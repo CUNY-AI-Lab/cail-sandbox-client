@@ -1,7 +1,7 @@
 import {
   outboundCorrelationHeaders,
   type CailCorrelation,
-} from "../vendor/cail-log/dist/index.js";
+} from "@cuny-ai-lab/cail-log";
 import {
   EventSourceParserStream,
   type EventSourceMessage,
@@ -12,11 +12,11 @@ export {
   correlationFromHeaders,
   outboundCorrelationHeaders,
   TRACEPARENT_HEADER,
-} from "../vendor/cail-log/dist/index.js";
+} from "@cuny-ai-lab/cail-log";
 export type {
   CailCorrelation,
   CailHeadersLike,
-} from "../vendor/cail-log/dist/index.js";
+} from "@cuny-ai-lab/cail-log";
 
 export type CailSandboxCredential = {
   kind: "jwt";

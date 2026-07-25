@@ -112,18 +112,18 @@ bun pm pack --dry-run
 with a sibling service checkout when present, or verifies the pinned digest
 standalone. Set `CAIL_SANDBOX_SERVICE_OPENAPI` to check another explicit file.
 
-The package is not published. Its correlation implementation and public
-re-exports come directly from the source- and hash-qualified, unpublished
-`cail-log` build at revision
-`cb6ffc0cfd4cb544639cbf288ff6eb24c7027e98` (tree
-`618c4bdfae0effadbe23cfd6c4dfb1fcf6440697`), with tarball SHA-256
+Sandbox Client `0.1.0` and CAIL Log `0.6.0` are published in CUNY AI Lab's
+GitHub Packages registry. This `0.1.1` candidate depends on the exact published
+Log version and lockfile artifact. The reviewed Log tarball is 50,269 bytes with
+SHA-256
 `8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215`.
-The upstream manifest still says `0.6.0`; that is provenance, not a claim that
-this behavior was published as `0.6.0`. An immutable successor release is still
-required before registry consumers can adopt the UUIDv7 contract. This package
-has no registry or consumer-override dependency on `cail-log`.
-Consume only an exact reviewed Sandbox-client source commit. Do not interpret
-metadata version `0.1.0` as registry availability.
+`evidence/registry-publications.json` records the immutable `0.1.0` Client and
+`0.6.0` Log receipts. It explicitly does not claim that this `0.1.1` successor
+has been published.
+
+Run `bun run check:release-authority` before packaging. It rejects version,
+lockfile, receipt, installed-package, or tarball drift. Publishing still
+requires a separately reviewed `v0.1.1` release.
 
 This client creates no Cloudflare resources and contains no deployment command.
 Isolated service deployment and end-to-end resource cleanup belong to the
