@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -39,6 +40,14 @@ test("full check rejects preexisting dist drift before any in-place build", () =
         );
       },
     });
+    // The copy has no .npmrc, so a scoped registry dependency cannot be resolved
+    // even from cache. Locally this passed only because ~/.npmrc supplied the
+    // scope mapping; on a runner there is none. No token: --offline never talks
+    // to the registry.
+    writeFileSync(
+      join(temporary, ".npmrc"),
+      "@cuny-ai-lab:registry=https://npm.pkg.github.com\n",
+    );
     const distPath = join(temporary, "dist/index.js");
     appendFileSync(distPath, sentinel);
     const dirtyBytes = readFileSync(distPath);
