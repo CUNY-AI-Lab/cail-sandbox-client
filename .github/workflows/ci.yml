@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+  # cail-log now comes from GitHub Packages rather than a vendored tarball, so
+  # the workflow needs to read it.
+  packages: read
 
 jobs:
   verify:
@@ -25,9 +28,22 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      # Credentials go in a worktree .npmrc and are removed in the same step. bun
+      # does not read $HOME/.npmrc during install on the runner: with only that
+      # file present it ignores the scope mapping and resolves @cuny-ai-lab
+      # against registry.npmjs.org, and with a lockfile it fetches the GitHub
+      # Packages tarballs unauthenticated and gets 401.
       - name: Install frozen dependencies
         working-directory: cail-sandbox-client
-        run: bun install --frozen-lockfile --ignore-scripts
+        run: |
+          unset NPM_CONFIG_USERCONFIG
+          printf '@cuny-ai-lab:registry=https://npm.pkg.github.com\n' > .npmrc
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" >> .npmrc
+          chmod 600 .npmrc
+          bun install --frozen-lockfile --ignore-scripts
+          rm -f .npmrc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify source, tests, build, and pinned contract
         working-directory: cail-sandbox-client
