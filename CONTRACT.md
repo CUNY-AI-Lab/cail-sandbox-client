@@ -1,7 +1,7 @@
 # CAIL Sandbox client contract
 
 Status: reviewed against `cail-sandbox-service`
-`82c3068c59da010677d33b862fed1dbad156964a`.
+`2fac839481aa38710ac45596c3e56227a85c02b7`.
 
 ## Owned boundary
 
@@ -96,7 +96,7 @@ failure or abort can leave the remote outcome ambiguous.
 
 The packaged OpenAPI is byte-identical to the accepted service artifact and
 has SHA-256
-`50458eba352ce01a776519e43f1ff7fadacf4d7ad8ca309aefdb649fc76e4591`.
+`07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26`.
 Package-local checks pin the digest and compare a sibling service checkout when
 available.
 

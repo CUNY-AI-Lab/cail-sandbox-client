@@ -250,7 +250,7 @@
       ],
       "get": {
         "operationId": "readFile",
-        "description": "Read session-bound workspace file bytes while the operation is ready or terminal. Executing or ambiguous operations fail with 409 operation_state.",
+        "description": "Read session-bound workspace file bytes while the operation is ready or terminal. Writing, deleting, executing, or ordinary ambiguous operations fail with 409 operation_state; a file-write ambiguity returns retryable 503 file_write_ambiguous.",
         "responses": {
           "200": {
             "description": "Raw workspace file bytes",
@@ -265,7 +265,7 @@
       },
       "put": {
         "operationId": "writeFile",
-        "description": "Write session-bound workspace file bytes only while the operation is ready. Executing, terminal, or ambiguous operations fail with 409 operation_state.",
+        "description": "Reserve and stage session-bound workspace file bytes while the operation is ready, then finalize the requested target. Writing, deleting, executing, terminal, or ordinary ambiguous operations fail with 409 operation_state. A pre-finalize conflict or expiry leaves the requested target untouched; an indeterminate finalization returns retryable 503 file_write_ambiguous.",
         "requestBody": {
           "required": true,
           "content": {
@@ -280,7 +280,7 @@
         },
         "responses": {
           "200": {
-            "description": "File written",
+            "description": "File target finalized",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Ok" }
@@ -587,7 +587,7 @@
           "param": { "type": ["string", "null"] },
           "code": {
             "type": "string",
-            "description": "Stable CAIL machine code. Direct Sandbox SDK failures use sandbox_runtime_error; observed caller cancellation uses request_cancelled."
+            "description": "Stable CAIL machine code. Direct Sandbox SDK failures use sandbox_runtime_error; observed caller cancellation uses request_cancelled; indeterminate target-file publication uses retryable file_write_ambiguous."
           },
           "cail": {
             "type": "object",

@@ -6,9 +6,9 @@ without exposing Cloudflare SDK types.
 
 The canonical service contract is
 `cail-sandbox-service` commit
-`82c3068c59da010677d33b862fed1dbad156964a`. This repository vendors its
+`2fac839481aa38710ac45596c3e56227a85c02b7`. This repository vendors its
 OpenAPI document byte-for-byte at `contract/sandbox-openapi.json`, SHA-256
-`50458eba352ce01a776519e43f1ff7fadacf4d7ad8ca309aefdb649fc76e4591`.
+`07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26`.
 
 ## Boundary
 

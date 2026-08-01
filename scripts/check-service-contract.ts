@@ -14,7 +14,7 @@ const servicePath =
 const local = readFileSync(localPath);
 const digest = createHash("sha256").update(local).digest("hex");
 const expected =
-  "50458eba352ce01a776519e43f1ff7fadacf4d7ad8ca309aefdb649fc76e4591";
+  "07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26";
 
 if (process.env.CAIL_SANDBOX_SERVICE_OPENAPI && !existsSync(servicePath)) {
   throw new Error(
