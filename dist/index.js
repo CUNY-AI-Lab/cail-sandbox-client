@@ -1,8 +1,9 @@
-import { outboundCorrelationHeaders, } from "@cuny-ai-lab/cail-log";
+import { REQUEST_ID_RE, outboundCorrelationHeaders, } from "@cuny-ai-lab/cail-log";
 import { EventSourceParserStream, } from "eventsource-parser/stream";
 export { CAIL_REQUEST_ID_HEADER, correlationFromHeaders, outboundCorrelationHeaders, TRACEPARENT_HEADER, } from "@cuny-ai-lab/cail-log";
 const liveResponseBodyReadErrors = new WeakSet();
 const liveEventSourceParseErrors = new WeakSet();
+const responseSignals = new WeakMap();
 export class CailSandboxError extends Error {
     code;
     status;
@@ -52,6 +53,11 @@ const ERROR_TYPES = new Set([
 ]);
 // WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+/** Resource IDs use the broader UUID shape above; request IDs use cail-log's
+ * canonical lowercase UUIDv4/v7 validator. */
+function isCailRequestId(value) {
+    return typeof value === "string" && REQUEST_ID_RE.test(value);
+}
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -104,30 +110,106 @@ function logResponseCleanupDiagnostic(operation) {
         // replace the request failure or create an unhandled promise rejection.
     }
 }
-function cancelResponseBody(response) {
+function cancelResponseBody(response, reason) {
     try {
         const body = response.body;
         if (body)
-            cancelResponseStream(body);
+            cancelResponseStream(body, reason);
     }
     catch {
         logResponseCleanupDiagnostic("body_cancel");
     }
 }
-function cancelResponseStream(stream) {
+function cancelResponseStream(stream, reason) {
     try {
-        void Promise.resolve(stream.cancel()).catch(() => logResponseCleanupDiagnostic("body_cancel"));
+        void Promise.resolve(stream.cancel(reason)).catch(() => logResponseCleanupDiagnostic("body_cancel"));
     }
     catch {
         logResponseCleanupDiagnostic("body_cancel");
     }
 }
-function cancelResponseReader(reader) {
+function cancelResponseReader(reader, reason) {
     try {
-        void Promise.resolve(reader.cancel()).catch(() => logResponseCleanupDiagnostic("reader_cancel"));
+        void Promise.resolve(reader.cancel(reason)).catch(() => logResponseCleanupDiagnostic("reader_cancel"));
     }
     catch {
         logResponseCleanupDiagnostic("reader_cancel");
+    }
+}
+/**
+ * Race one reader operation against the owning signal. The underlying read is
+ * always given rejection handlers before the race can settle, so a provider
+ * that rejects late after cancellation cannot surface an unhandled rejection.
+ * Cancellation is requested by the caller exactly once and is never awaited.
+ */
+function readWithSignal(reader, signal, requestCancel) {
+    if (!signal) {
+        try {
+            return Promise.resolve(reader.read());
+        }
+        catch (error) {
+            return Promise.reject(error);
+        }
+    }
+    const rejectAborted = () => {
+        const reason = signal.reason;
+        requestCancel(reason);
+        return Promise.reject(reason);
+    };
+    if (signal.aborted)
+        return rejectAborted();
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let onAbort;
+        const removeAbortListener = () => {
+            if (onAbort === undefined)
+                return;
+            signal.removeEventListener("abort", onAbort);
+            onAbort = undefined;
+        };
+        const settle = (callback) => {
+            if (settled)
+                return;
+            settled = true;
+            removeAbortListener();
+            callback();
+        };
+        onAbort = () => {
+            if (settled)
+                return;
+            const reason = signal.reason;
+            settle(() => {
+                requestCancel(reason);
+                reject(reason);
+            });
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        let pending;
+        try {
+            pending = reader.read();
+        }
+        catch (error) {
+            settle(() => reject(error));
+            return;
+        }
+        // Keep handlers attached after abort wins. A provider may reject the
+        // original read after cancellation/release; observing it prevents an
+        // unhandled rejection without changing the primary abort error.
+        void Promise.resolve(pending).then((value) => settle(() => resolve(value)), (error) => settle(() => reject(error)));
+    });
+}
+function isSignalReason(error, signal) {
+    if (!signal)
+        return false;
+    try {
+        return signal.aborted && error === signal.reason;
+    }
+    catch {
+        return false;
     }
 }
 function releaseResponseReader(reader) {
@@ -155,8 +237,8 @@ function requireStatus(response, expected) {
 function responseRequestId(response) {
     const canonical = response.headers.get("x-cail-request-id");
     const alias = response.headers.get("x-request-id");
-    if ((canonical !== null && !UUID.test(canonical)) ||
-        (alias !== null && !UUID.test(alias))) {
+    if ((canonical !== null && !isCailRequestId(canonical)) ||
+        (alias !== null && !isCailRequestId(alias))) {
         throw new CailSandboxError("invalid_response", "Sandbox response used an invalid request identifier.", response.status, "unknown_error", null, {}, null, responseShouldRetry(response));
     }
     if (canonical !== null && alias !== null && canonical !== alias) {
@@ -212,6 +294,9 @@ async function parseSuccessRecord(response, message) {
         body = await readBoundedJson(response);
     }
     catch (cause) {
+        const signal = responseSignals.get(response);
+        if (isSignalReason(cause, signal) || isAbortError(cause))
+            throw cause;
         throw responseError(response, "invalid_response", message, "unknown_error", cause);
     }
     if (!isRecord(body)) {
@@ -226,13 +311,18 @@ class ResponseBodyReadError extends Error {
         liveResponseBodyReadErrors.add(this);
     }
 }
-async function readBoundedJson(response) {
+async function readBoundedJson(response, signal = responseSignals.get(response)) {
+    if (signal?.aborted) {
+        cancelResponseBody(response, signal.reason);
+        throw signal.reason;
+    }
     const declaredLength = response.headers.get("content-length");
     if (declaredLength !== null &&
         /^\d+$/u.test(declaredLength) &&
         Number(declaredLength) > MAX_JSON_RESPONSE_BYTES) {
-        cancelResponseBody(response);
-        throw new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+        const error = new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+        cancelResponseBody(response, error);
+        throw error;
     }
     if (!response.body) {
         throw new ResponseBodyReadError("Sandbox JSON response had no body.");
@@ -241,17 +331,29 @@ async function readBoundedJson(response) {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     let total = 0;
     let text = "";
+    let cancelRequested = false;
+    const requestCancel = (reason) => {
+        if (cancelRequested)
+            return;
+        cancelRequested = true;
+        cancelResponseReader(reader, reason);
+    };
     try {
         while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await readWithSignal(reader, signal, requestCancel);
+            if (signal?.aborted) {
+                requestCancel(signal.reason);
+                throw signal.reason;
+            }
             if (done) {
                 text += decoder.decode();
                 break;
             }
             total += value.byteLength;
             if (total > MAX_JSON_RESPONSE_BYTES) {
-                cancelResponseReader(reader);
-                throw new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+                const error = new ResponseBodyReadError("Sandbox JSON response exceeded the byte ceiling.");
+                requestCancel(error);
+                throw error;
             }
             text += decoder.decode(value, { stream: true });
         }
@@ -259,7 +361,9 @@ async function readBoundedJson(response) {
     catch (cause) {
         if (liveResponseBodyReadErrors.has(cause))
             throw cause;
-        cancelResponseReader(reader);
+        if (isSignalReason(cause, signal) || isAbortError(cause))
+            throw cause;
+        requestCancel(cause);
         throw new ResponseBodyReadError("Sandbox JSON response could not be read.", { cause });
     }
     finally {
@@ -507,6 +611,9 @@ async function parseError(response) {
         body = await readBoundedJson(response);
     }
     catch (cause) {
+        const signal = responseSignals.get(response);
+        if (isSignalReason(cause, signal) || isAbortError(cause))
+            throw cause;
         return new CailSandboxError("unknown_error", `Sandbox request failed with HTTP ${response.status}.`, response.status, "unknown_error", null, {}, requestId, shouldRetry, cause);
     }
     if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
@@ -592,6 +699,7 @@ export function createCailSandboxClient(options) {
             redirect: "manual",
             signal,
         });
+        responseSignals.set(response, signal);
         if (response.type === "opaqueredirect" ||
             (response.status >= 300 && response.status < 400)) {
             cancelResponseBody(response);
@@ -730,6 +838,7 @@ function encodePath(path) {
     return path.split("/").map(encodeURIComponent).join("/");
 }
 async function* parseCommandEvents(response) {
+    const signal = responseSignals.get(response);
     const ownedStreamErrors = new WeakSet();
     const invalidStream = (message, cause) => {
         const error = responseError(response, "invalid_stream", message, "unknown_error", cause);
@@ -740,12 +849,27 @@ async function* parseCommandEvents(response) {
     let cleanupStream = null;
     let reader = null;
     let streamDone = false;
+    let primaryError;
+    let cancelRequested = false;
+    const requestCancel = (reason) => {
+        if (cancelRequested)
+            return;
+        cancelRequested = true;
+        if (reader) {
+            cancelResponseReader(reader, reason);
+        }
+        else if (cleanupStream) {
+            cancelResponseStream(cleanupStream, reason);
+        }
+    };
     try {
         const body = response.body;
         cleanupStream = body;
         if (responseMediaType(response) !== "text/event-stream") {
             throw invalidStream("Command response did not use the text/event-stream media type.");
         }
+        if (signal?.aborted)
+            throw signal.reason;
         if (!body) {
             throw invalidStream("Command response had no body.");
         }
@@ -761,7 +885,11 @@ async function* parseCommandEvents(response) {
         cleanupStream = events;
         reader = events.getReader();
         while (true) {
-            const { done, value: message } = await reader.read();
+            const { done, value: message } = await readWithSignal(reader, signal, requestCancel);
+            if (signal?.aborted) {
+                requestCancel(signal.reason);
+                throw signal.reason;
+            }
             if (done) {
                 streamDone = true;
                 break;
@@ -832,7 +960,7 @@ async function* parseCommandEvents(response) {
                     typeof data.code !== "string" ||
                     typeof data.message !== "string" ||
                     typeof data.request_id !== "string" ||
-                    !UUID.test(data.request_id)) {
+                    !isCailRequestId(data.request_id)) {
                     throw invalidStream("Command error event was malformed.");
                 }
                 terminal = {
@@ -845,10 +973,11 @@ async function* parseCommandEvents(response) {
         }
     }
     catch (error) {
+        primaryError = error;
         if (ownedStreamErrors.has(error))
             throw error;
         // Deliberate abort is not a framing failure — surface it unchanged.
-        if (isAbortError(error))
+        if (isSignalReason(error, signal) || isAbortError(error))
             throw error;
         if (isParseError(error)) {
             throw invalidStream("Command stream framing was invalid.", error);
@@ -859,12 +988,7 @@ async function* parseCommandEvents(response) {
         if (!streamDone) {
             // Teardown is deliberately non-blocking: a broken transport cancel must
             // neither stall nor replace the primary protocol/transport failure.
-            if (reader) {
-                cancelResponseReader(reader);
-            }
-            else if (cleanupStream) {
-                cancelResponseStream(cleanupStream);
-            }
+            requestCancel(signal?.aborted ? signal.reason : primaryError);
         }
         if (reader)
             releaseResponseReader(reader);
