@@ -105,6 +105,7 @@ test("thin client wraps every authenticated sandbox operation", () => {
 
 test("filtered OpenAPI retains raw files, explicit sessions, and error headers", () => {
   const file = OPENAPI.paths["/sandbox/v1/sandbox/{id}/file/{path}"];
+  const proseContract = readFileSync("CONTRACT.md", "utf8");
   expect(file).toHaveProperty("get");
   expect(file).toHaveProperty("put");
   expect(OPENAPI.paths).toHaveProperty("/sandbox/v1/sandbox/{id}/session");
@@ -123,12 +124,14 @@ test("filtered OpenAPI retains raw files, explicit sessions, and error headers",
   );
   expect(file.get.description).toContain("ready or terminal");
   expect(file.get.description).toContain("409 operation_state");
+  expect(file.get.description).toContain("file_write_ambiguous");
   expect(file.put.description).toContain("while the operation is ready");
   expect(file.put.description).toContain("409 operation_state");
   expect(file.put.description).toContain("file_write_ambiguous");
   expect(
     OPENAPI.components.schemas.ErrorObject.properties.code.description,
   ).toContain("file_write_ambiguous");
+  expect(proseContract).toContain("503 file_write_ambiguous");
 });
 
 test("service auth contract requires the canonical RS256 identity JWT", () => {

@@ -77,8 +77,10 @@ loopback hosts, and rejects redirects.
 
 File phase authorization is service-owned: `writeFile` is ready-only, while
 `readFile` is allowed in ready or terminal. Both fail with `409 operation_state`
-while executing or ambiguous; terminal writes also fail. The client forwards
-these strict service outcomes without adding a local operation-state model.
+while executing or ordinarily ambiguous; terminal writes also fail. A persisted
+file-write ambiguity returns retryable `503 file_write_ambiguous` for either
+file method until the operation is reconciled. The client forwards these strict
+service outcomes without adding a local operation-state model.
 
 Typed server errors require the exact nested CAIL envelope, both equal request
 ID headers, `application/json`, and lowercase `x-should-retry`. Malformed
