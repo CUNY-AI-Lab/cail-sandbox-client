@@ -61,6 +61,13 @@ function isCailRequestId(value) {
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isCailDetails(value) {
+    return (isRecord(value) &&
+        Object.values(value).every((entry) => entry === null ||
+            typeof entry === "string" ||
+            typeof entry === "number" ||
+            typeof entry === "boolean"));
+}
 function hasOnlyKeys(value, allowed) {
     return Object.keys(value).every((key) => allowed.includes(key));
 }
@@ -619,7 +626,7 @@ async function parseError(response) {
     if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
         const error = body.error;
         const cail = error.cail;
-        const validCail = cail === undefined || isRecord(cail);
+        const validCail = cail === undefined || isCailDetails(cail);
         const validParam = error.param === null || typeof error.param === "string";
         if (hasOnlyKeys(error, ["message", "type", "param", "code", "cail"]) &&
             typeof error.code === "string" &&
@@ -732,6 +739,7 @@ export function createCailSandboxClient(options) {
         async destroy(lease, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}`, { method: "DELETE", headers: leaseHeaders(lease) }, credential, callOptions);
             requireStatus(response, 204);
+            cancelResponseBody(response);
         },
         async usage(credential, callOptions) {
             const response = await call("/sandbox/v1/usage", {}, credential, callOptions);
@@ -759,10 +767,16 @@ export function createCailSandboxClient(options) {
         async destroySession(lease, operation, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/session/${encodeId(operation.id)}`, { method: "DELETE", headers: operationHeaders(lease, operation) }, credential, callOptions);
             requireStatus(response, 204);
+            cancelResponseBody(response);
         },
         async readFile(lease, operation, path, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, { headers: operationHeaders(lease, operation) }, credential, callOptions);
-            return requireStatus(response, 200);
+            const validated = requireStatus(response, 200);
+            if (responseMediaType(validated) !== "application/octet-stream") {
+                cancelResponseBody(validated);
+                throw responseError(validated, "invalid_response", "Sandbox file response used an unexpected media type.");
+            }
+            return validated;
         },
         async writeFile(lease, operation, path, body, credential, callOptions) {
             const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, {

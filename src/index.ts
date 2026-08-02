@@ -240,6 +240,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isCailDetails(
+  value: unknown,
+): value is Record<string, string | number | boolean | null> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (entry) =>
+        entry === null ||
+        typeof entry === "string" ||
+        typeof entry === "number" ||
+        typeof entry === "boolean",
+    )
+  );
+}
+
 function hasOnlyKeys(
   value: Record<string, unknown>,
   allowed: readonly string[],
@@ -971,7 +986,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
   if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
     const error = body.error;
     const cail = error.cail;
-    const validCail = cail === undefined || isRecord(cail);
+    const validCail = cail === undefined || isCailDetails(cail);
     const validParam = error.param === null || typeof error.param === "string";
     if (
       hasOnlyKeys(error, ["message", "type", "param", "code", "cail"]) &&
@@ -1168,6 +1183,7 @@ export function createCailSandboxClient(
         callOptions,
       );
       requireStatus(response, 204);
+      cancelResponseBody(response);
     },
     async usage(
       credential: CailSandboxCredential,
@@ -1235,6 +1251,7 @@ export function createCailSandboxClient(
         callOptions,
       );
       requireStatus(response, 204);
+      cancelResponseBody(response);
     },
     async readFile(
       lease: SandboxLease,
@@ -1249,7 +1266,16 @@ export function createCailSandboxClient(
         credential,
         callOptions,
       );
-      return requireStatus(response, 200);
+      const validated = requireStatus(response, 200);
+      if (responseMediaType(validated) !== "application/octet-stream") {
+        cancelResponseBody(validated);
+        throw responseError(
+          validated,
+          "invalid_response",
+          "Sandbox file response used an unexpected media type.",
+        );
+      }
+      return validated;
     },
     async writeFile(
       lease: SandboxLease,

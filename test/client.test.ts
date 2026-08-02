@@ -287,7 +287,10 @@ test("binds session, file, exec, and cleanup calls to one operation capability",
       if (request.url.endsWith("/exec")) {
         return sseResponse('event: exit\ndata: {"exit_code":0}\n\n');
       }
-      if (request.method === "GET") return new Response("file");
+      if (request.method === "GET")
+        return new Response("file", {
+          headers: { "content-type": "application/octet-stream" },
+        });
       if (request.method === "PUT") return Response.json({ ok: true });
       return new Response(null, { status: 204 });
     },
@@ -377,7 +380,10 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
       }
       if (request.url.endsWith("/openapi.json"))
         return Response.json({ openapi: "3.1.1" });
-      if (request.method === "GET") return new Response("data");
+      if (request.method === "GET")
+        return new Response("data", {
+          headers: { "content-type": "application/octet-stream" },
+        });
       if (request.method === "PUT") return Response.json({ ok: true });
       return new Response(null, { status: 204 });
     },
@@ -554,6 +560,54 @@ test("cancels response bodies rejected before parsing", async () => {
     ]),
   ).toBe("rejected");
   expect(stalledCancelCalled).toBeTrue();
+});
+
+test("cancels unexpected successful no-content lifecycle bodies", async () => {
+  const cancelled: boolean[] = [];
+  const responseWithBody = () => {
+    const index = cancelled.length;
+    cancelled.push(false);
+    const response = new Response(null, { status: 204 });
+    Object.defineProperty(response, "body", {
+      value: new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled[index] = true;
+        },
+      }),
+    });
+    return response;
+  };
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => responseWithBody(),
+  });
+
+  await client.destroy(lease, jwt);
+  await client.destroySession(lease, operation, jwt);
+  expect(cancelled).toEqual([true, true]);
+});
+
+test("rejects and cancels a successful file response with the wrong media type", async () => {
+  let cancelled = false;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { headers: { "content-type": "text/plain" } },
+      ),
+  });
+
+  await expect(
+    client.readFile(lease, operation, "a.txt", jwt),
+  ).rejects.toMatchObject({ code: "invalid_response" });
+  expect(cancelled).toBeTrue();
 });
 
 test("preserves response metadata on unexpected statuses and malformed success bodies", async () => {
@@ -871,6 +925,13 @@ test("fails closed on nested errors outside the OpenAPI schema", async () => {
       param: null,
       code: "broken",
       extra: true,
+    },
+    {
+      message: "No.",
+      type: "server_error",
+      param: null,
+      code: "broken_details",
+      cail: { nested: { secret: "not allowed" } },
     },
   ]) {
     const client = createCailSandboxClient({
