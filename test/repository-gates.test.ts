@@ -30,7 +30,7 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
   expect(pkg).toMatchObject({
     name: "@cuny-ai-lab/cail-sandbox-client",
     version: "0.1.1",
-    packageManager: "bun@1.3.5",
+    packageManager: "bun@1.3.14",
   });
   expect(pkg.files).toContain("CONTRACT.md");
   expect(pkg.files).not.toContain("vendor");
