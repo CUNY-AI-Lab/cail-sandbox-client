@@ -37,11 +37,12 @@
     "check:clean": "bun run scripts/check-clean.ts",
     "check:dist": "bun run scripts/check-dist.ts",
     "check:release-authority": "bun run scripts/check-release-authority.ts",
+    "check:release-ref": "bun run scripts/check-release-ref.ts",
     "check:release-live": "bun run scripts/check-live-release-authority.ts",
     "check:service-contract": "bun run scripts/check-service-contract.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "bun run check && bun run check:clean && bun run check:release-live && git diff --exit-code -- dist",
+    "prepublishOnly": "bun run check && bun run check:clean && bun run check:release-ref && bun run check:release-live && git diff --exit-code -- dist",
     "prepare": "bun run build"
   },
   "devDependencies": {

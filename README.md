@@ -123,20 +123,25 @@ Run `bun run check:release-authority` before packaging. It rejects version,
 lockfile, receipt, installed-package, or tarball drift. Each publication also
 requires an ordinary clean Git checkout and a live GitHub Packages preflight
 against the release authority recorded by the source checkout. The release
-workflow uses a temporary worktree `.npmrc` for the private dependency
-install, removes it on every exit, and authenticates `bun publish` through its
-documented `NPM_CONFIG_TOKEN` environment variable; no credential file remains
-in the publication checkout. Publishing requires a separately reviewed
-release tag matching the package version.
+workflow resolves the remote GitHub tag (including bounded annotated tags),
+requires the exact `v<package.version>` ref, and checks that its commit equals
+both `GITHUB_SHA` and the live default-branch head; it does not trust only a
+local or shallow checkout. The workflow uses a temporary worktree `.npmrc` for
+the private dependency install, removes it on every exit, and authenticates
+`bun publish` through its documented `NPM_CONFIG_TOKEN` environment variable;
+no credential file remains in the publication checkout. Publishing requires a
+separately reviewed release tag matching the package version.
 
 The `repository` field points to this GitHub repository so GitHub Packages can
 associate the npm package with its source. The private CI job requests only
 `contents: read` and `packages: read`, while the required guard requests
 `contents: read` without package access. The publish workflow requests
 `contents: read` and `packages: write`, with no delete or admin permission. The
-package's GitHub-side Manage Actions access or inherited-permissions setting is
-external state and must still be confirmed in package settings before
-publication.
+the package's GitHub-side Manage Actions access or inherited-permissions setting
+and deleted-version history are external state and must still be confirmed in
+package settings before publication. The workflow deliberately does not
+request package-delete permission. A deleted or reusable `0.1.1` version is an
+immutable-authority stop condition.
 
 CI's required `verify` job is an unconditional, package-free guard: it checks
 the package shape and scans the checkout and history for secrets without

@@ -40,6 +40,14 @@ test("CI checks release authority, the contract, committed build, package, and s
   expect(privateJob).not.toContain("CAIL_SANDBOX_SERVICE_OPENAPI");
   expect(privateJob).toContain("bun run check");
   expect(privateJob).toContain("git diff --exit-code -- dist");
+  expect(readme).toContain("remote GitHub tag");
+  expect(readme).toContain("live default-branch head");
+  expect(readme).toContain("deleted-version history");
+  expect(readme).toContain("branch-protection setting");
+  expect(readme).toContain("Manage Actions access");
+  expect(contract).toContain("deleted-version history");
+  expect(contract).toContain("default-branch head");
+  expect(contract).toContain("GitHub Actions access");
   expect(readme).not.toContain("unpublished");
   expect(readme).not.toContain("candidate");
   expect(readme).toContain(
