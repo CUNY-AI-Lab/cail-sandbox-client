@@ -291,6 +291,16 @@ function operationHeaders(lease, operation) {
         "x-cail-operation-capability": controlValue(operation.operationCapability, "operationCapability"),
     };
 }
+function isReadableStreamBody(body) {
+    if (typeof body !== "object" || body === null)
+        return false;
+    try {
+        return typeof body.getReader === "function";
+    }
+    catch {
+        return false;
+    }
+}
 async function parseSuccessRecord(response, message) {
     if (responseMediaType(response) !== "application/json") {
         cancelResponseBody(response);
@@ -779,14 +789,17 @@ export function createCailSandboxClient(options) {
             return validated;
         },
         async writeFile(lease, operation, path, body, credential, callOptions) {
-            const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, {
+            const requestInit = {
                 method: "PUT",
                 body,
                 headers: {
                     ...operationHeaders(lease, operation),
                     "content-type": "application/octet-stream",
                 },
-            }, credential, callOptions);
+            };
+            if (isReadableStreamBody(body))
+                requestInit.duplex = "half";
+            const response = await call(`/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`, requestInit, credential, callOptions);
             requireStatus(response, 200);
             const result = await parseSuccessRecord(response, "Sandbox file-write response was malformed.");
             if (!hasOnlyKeys(result, ["ok"]) || result.ok !== true) {

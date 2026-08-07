@@ -338,6 +338,63 @@ test("binds session, file, exec, and cleanup calls to one operation capability",
   expect(seen[1].headers.get("content-type")).toBe("application/octet-stream");
 });
 
+test("uses half-duplex for streaming file uploads at the native Request boundary", async () => {
+  let seenDuplex: unknown;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async (input, init) => {
+      seenDuplex = (init as RequestInit & { duplex?: unknown }).duplex;
+      if (
+        typeof init?.body === "object" &&
+        init.body !== null &&
+        typeof (init.body as { getReader?: unknown }).getReader ===
+          "function" &&
+        (init as RequestInit & { duplex?: unknown }).duplex !== "half"
+      ) {
+        throw new TypeError(
+          "RequestInit: duplex option is required when sending a body.",
+        );
+      }
+      new Request(input, init);
+      return Response.json({ ok: true });
+    },
+  });
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]));
+      controller.close();
+    },
+  });
+
+  await expect(
+    client.writeFile(lease, operation, "a.txt", body, jwt),
+  ).resolves.toBeUndefined();
+  expect(seenDuplex).toBe("half");
+
+  const foreignBody = {
+    getReader() {
+      return {};
+    },
+  } as unknown as BodyInit;
+  await expect(
+    client.writeFile(lease, operation, "a.txt", foreignBody, jwt),
+  ).resolves.toBeUndefined();
+  expect(seenDuplex).toBe("half");
+
+  const ordinaryBodies: BodyInit[] = [
+    "data",
+    new Blob(["data"]),
+    new FormData(),
+  ];
+  for (const ordinaryBody of ordinaryBodies) {
+    await expect(
+      client.writeFile(lease, operation, "a.txt", ordinaryBody, jwt),
+    ).resolves.toBeUndefined();
+    expect(seenDuplex).toBeUndefined();
+  }
+});
+
 test("forwards AbortSignal on every typed sandbox operation", async () => {
   const controller = new AbortController();
   const seen: AbortSignal[] = [];
