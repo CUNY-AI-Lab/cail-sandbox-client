@@ -1,13 +1,11 @@
 name: CI Private
 
-# This workflow is separate from the package-free, PR-controlled ci.yml. A
-# pull_request_target run reads this file from the base repository's default
-# branch, so a PR cannot remove its package-read gate or change its permissions.
+# This workflow is separate from the package-free, PR-controlled ci.yml. It
+# runs only from a push to the protected default branch, so package credentials
+# are never present while pull-request code is being tested.
 on:
   push:
     branches: [main]
-  pull_request_target:
-    types: [opened, synchronize, reopened]
 
 permissions: {}
 
@@ -34,59 +32,37 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      # Bun does not read $HOME/.npmrc during install on the runner: with only
-      # that file present it ignores the scope mapping and resolves
-      # @cuny-ai-lab against registry.npmjs.org. The helper preserves any
-      # pre-existing ignored .npmrc while installing the private dependency.
+      # Keep the package credential in a mode-600 regular file outside the
+      # checkout. Remove and verify its absence before any project code runs.
       - name: Install frozen dependencies
         working-directory: cail-sandbox-client
-        run: bash scripts/install-registry-dependencies.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          umask 077
+          config_path="$(mktemp "$RUNNER_TEMP/cail-sandbox-client-bunfig.XXXXXX.toml")"
+          cleanup() {
+            local status=$?
+            trap - EXIT HUP INT TERM
+            rm -f -- "$config_path"
+            if [[ -e "$config_path" || -L "$config_path" ]]; then
+              echo "temporary Bun config cleanup failed" >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT HUP INT TERM
+          [[ -f "$config_path" && ! -L "$config_path" ]]
+          printf '%s\n' \
+            '[install.scopes]' \
+            '"@cuny-ai-lab" = { token = "$GITHUB_PACKAGES_TOKEN", url = "https://npm.pkg.github.com" }' > "$config_path"
+          chmod 600 "$config_path"
+          bun install --config="$config_path" --frozen-lockfile --ignore-scripts --no-cache
+          rm -f -- "$config_path"
+          [[ ! -e "$config_path" && ! -L "$config_path" ]]
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify source, tests, build, and pinned contract
-        working-directory: cail-sandbox-client
-        run: bun run check
-
-      - name: Verify committed build parity
-        working-directory: cail-sandbox-client
-        run: git diff --exit-code -- dist
-
-  verify-private-pr:
-    # Check the repository and webhook actor types before checking out PR code.
-    # Missing or non-User values fail closed, so forks and automation only get
-    # the unconditional, package-free verify job from ci.yml.
-    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type == 'User' && github.event.sender.type == 'User' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      # The same-repository gate above is evaluated before this PR head SHA is
-      # checked out and any code or dependency install is executed.
-      - name: Check out trusted same-repository PR head
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: cail-sandbox-client
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-
-      # Bun does not read $HOME/.npmrc during install on the runner: with only
-      # that file present it ignores the scope mapping and resolves
-      # @cuny-ai-lab against registry.npmjs.org. The helper preserves any
-      # pre-existing ignored .npmrc while installing the private dependency.
-      - name: Install frozen dependencies
-        working-directory: cail-sandbox-client
-        run: bash scripts/install-registry-dependencies.sh
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify source, tests, build, and pinned contract
         working-directory: cail-sandbox-client
