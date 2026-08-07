@@ -146,13 +146,17 @@ immutable-authority stop condition.
 CI's required `verify` job is an unconditional, package-free guard: it checks
 the package shape and scans the checkout and history for secrets without
 requesting package credentials. This guard runs for every push and pull
-request, including forks and Dependabot, so a skipped private job cannot
-satisfy the required check. The separate `verify-private` job installs the
-internal CAIL Log dependency and runs the full source, test, build, and contract
-checks only for pushes and same-repository, non-Dependabot pull requests. Fork
-and Dependabot pull requests therefore receive the safe guard but not the
-private-dependency integration checks; full fork integration needs a separate
-dependency-visibility or isolation design.
+request, including forks and automation, so a skipped private job cannot
+satisfy the required check. The package-free `CI` workflow contains no
+package-read job. The separate `CI Private` workflow has a push-main job and a
+same-repository pull-request job. The latter uses `pull_request_target` so its
+workflow file comes from the base repository's default branch. It checks the
+head repository and requires both the webhook author and event sender to be
+GitHub user accounts before checking out the exact PR head SHA and installing
+the private CAIL Log dependency. Fork, Dependabot, Renovate, and other pull
+requests whose webhook actors are bots or unknown automation therefore receive
+the safe guard but not the private-dependency integration checks; full fork
+integration needs a separate dependency-visibility or isolation design.
 The branch-protection setting that requires `CI / verify` is external state and
 must be confirmed separately.
 
