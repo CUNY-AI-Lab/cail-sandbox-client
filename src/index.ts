@@ -571,6 +571,17 @@ function operationHeaders(lease: SandboxLease, operation: SandboxOperation) {
   };
 }
 
+function isReadableStreamBody(
+  body: BodyInit,
+): body is ReadableStream<Uint8Array> {
+  if (typeof body !== "object" || body === null) return false;
+  try {
+    return typeof (body as { getReader?: unknown }).getReader === "function";
+  } catch {
+    return false;
+  }
+}
+
 async function parseSuccessRecord(
   response: Response,
   message: string,
@@ -1285,16 +1296,18 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
+      const requestInit: RequestInit & { duplex?: "half" } = {
+        method: "PUT",
+        body,
+        headers: {
+          ...operationHeaders(lease, operation),
+          "content-type": "application/octet-stream",
+        },
+      };
+      if (isReadableStreamBody(body)) requestInit.duplex = "half";
       const response = await call(
         `/sandbox/v1/sandbox/${encodeId(lease.id)}/file/${encodePath(path)}`,
-        {
-          method: "PUT",
-          body,
-          headers: {
-            ...operationHeaders(lease, operation),
-            "content-type": "application/octet-stream",
-          },
-        },
+        requestInit,
         credential,
         callOptions,
       );
