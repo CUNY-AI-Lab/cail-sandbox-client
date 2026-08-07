@@ -126,8 +126,8 @@ against the release authority recorded by the source checkout. The release
 workflow resolves the remote GitHub tag (including bounded annotated tags),
 requires the exact `v<package.version>` ref, and checks that its commit equals
 both `GITHUB_SHA` and the live default-branch head; it does not trust only a
-local or shallow checkout. The workflow uses a temporary worktree `.npmrc` for
-the private dependency install, removes it on every exit, and authenticates
+local or shallow checkout. The workflow uses a temporary registry-auth config
+for the private dependency install, removes it on every exit, and authenticates
 `bun publish` through its documented `NPM_CONFIG_TOKEN` environment variable;
 no credential file remains in the publication checkout. Publishing requires a
 separately reviewed release tag matching the package version.
@@ -148,15 +148,16 @@ the package shape and scans the checkout and history for secrets without
 requesting package credentials. This guard runs for every push and pull
 request, including forks and automation, so a skipped private job cannot
 satisfy the required check. The package-free `CI` workflow contains no
-package-read job. The separate `CI Private` workflow has a push-main job and a
-same-repository pull-request job. The latter uses `pull_request_target` so its
-workflow file comes from the base repository's default branch. It checks the
-head repository and requires both the webhook author and event sender to be
-GitHub user accounts before checking out the exact PR head SHA and installing
-the private CAIL Log dependency. Fork, Dependabot, Renovate, and other pull
-requests whose webhook actors are bots or unknown automation therefore receive
-the safe guard but not the private-dependency integration checks; full fork
-integration needs a separate dependency-visibility or isolation design.
+package-read job. The separate `CI Private` workflow runs only on a push to the
+protected `main` branch. Its job checks out the exact `GITHUB_SHA`, requests
+job-scoped `contents: read` and `packages: read`, and installs the private CAIL
+Log dependency with a mode-600 regular `bunfig.toml` created under
+`RUNNER_TEMP` and passed explicitly to Bun. The config is removed and its
+absence verified before `bun run check` starts; the workflow does not use
+`pull_request_target` or execute pull-request code with package credentials.
+Dependency-changing pull requests therefore require pre-merge owner-side
+authenticated exact-SHA proof until the private package is publicly readable or
+another canonical trust mechanism exists.
 The branch-protection setting that requires `CI / verify` is external state and
 must be confirmed separately.
 

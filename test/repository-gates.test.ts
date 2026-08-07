@@ -20,16 +20,8 @@ test("CI checks release authority, the contract, committed build, package, and s
   const privatePushJobStart = privateWorkflow.indexOf(
     "  verify-private-push:\n",
   );
-  const privatePrJobStart = privateWorkflow.indexOf(
-    "  verify-private-pr:\n",
-  );
   expect(privatePushJobStart).toBeGreaterThanOrEqual(0);
-  expect(privatePrJobStart).toBeGreaterThan(privatePushJobStart);
-  const privatePushJob = privateWorkflow.slice(
-    privatePushJobStart,
-    privatePrJobStart,
-  );
-  const privatePrJob = privateWorkflow.slice(privatePrJobStart);
+  const privatePushJob = privateWorkflow.slice(privatePushJobStart);
   expect(workflow).toContain("permissions:\n  contents: read");
   expect(workflow).not.toContain("verify-private:");
   expect(workflow).not.toContain("packages:");
@@ -37,6 +29,11 @@ test("CI checks release authority, the contract, committed build, package, and s
   expect(workflow).not.toContain("NODE_AUTH_TOKEN");
   expect(workflow).not.toContain("NPM_CONFIG_TOKEN");
   expect(workflow).not.toContain("install-registry-dependencies.sh");
+  for (const source of [workflow, privateWorkflow]) {
+    for (const match of source.matchAll(/^\s+uses:\s+\S+@([^\s#]+)/gm)) {
+      expect(match[1]).toMatch(/^[0-9a-f]{40}$/);
+    }
+  }
   expect(requiredJob).not.toContain("if:");
   expect(requiredJob).not.toContain("packages:");
   expect(requiredJob).not.toContain("secrets.");
@@ -45,36 +42,48 @@ test("CI checks release authority, the contract, committed build, package, and s
   expect(requiredJob).not.toContain("NPM_CONFIG_TOKEN");
   expect(requiredJob).toContain("bun pm pack --dry-run --ignore-scripts");
   expect(requiredJob.toLowerCase()).toContain("gitleaks");
+  expect(workflow).toContain("on:\n  pull_request:");
   expect(privatePushJob).toContain(
     "if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
   );
-  expect(privateWorkflow).toContain("pull_request_target:");
-  expect(privateWorkflow).toContain(
-    "types: [opened, synchronize, reopened]",
-  );
-  expect(privateWorkflow).not.toContain("\n  pull_request:\n");
-  expect(privateWorkflow).toContain(
-    "if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type == 'User' && github.event.sender.type == 'User' }}",
-  );
-  expect(privateWorkflow).toContain(
-    "base repository's default",
-  );
+  expect(privateWorkflow).toContain("on:\n  push:\n    branches: [main]");
+  expect(privateWorkflow).not.toContain("pull_request_target");
+  expect(privateWorkflow).not.toContain("github.event.pull_request");
+  expect(privateWorkflow).not.toContain("verify-private-pr");
   expect(privateWorkflow).toContain("permissions: {}");
   expect(privateWorkflow).toContain(
     "permissions:\n      contents: read\n      packages: read",
   );
   expect(privateWorkflow).toContain(
-    "ref: ${{ github.event.pull_request.head.sha }}",
+    "ref: ${{ github.sha }}",
   );
   expect(privateWorkflow).not.toContain(
     "repository: ${{ github.event.pull_request.head.repo.full_name }}",
   );
   expect(privateWorkflow).toContain("packages: read");
+  expect(privateWorkflow).not.toContain("install-registry-dependencies.sh");
   expect(privatePushJob).toContain(
-    "run: bash scripts/install-registry-dependencies.sh",
+    'config_path="$(mktemp "$RUNNER_TEMP/cail-sandbox-client-bunfig.XXXXXX.toml")"',
   );
-  expect(privatePrJob).toContain(
-    "run: bash scripts/install-registry-dependencies.sh",
+  expect(privatePushJob).toContain(
+    '[[ -f "$config_path" && ! -L "$config_path" ]]',
+  );
+  expect(privatePushJob).toContain("[install.scopes]");
+  expect(privatePushJob).toContain(
+    '"@cuny-ai-lab" = { token = "$GITHUB_PACKAGES_TOKEN", url = "https://npm.pkg.github.com" }',
+  );
+  expect(privatePushJob).not.toContain(".npmrc");
+  expect(privatePushJob).toContain('chmod 600 "$config_path"');
+  expect(privatePushJob).toContain(
+    'bun install --config="$config_path" --frozen-lockfile --ignore-scripts --no-cache',
+  );
+  expect(privatePushJob).not.toContain("NPM_CONFIG_USERCONFIG");
+  expect(privatePushJob).toContain("GITHUB_PACKAGES_TOKEN:");
+  expect(privatePushJob).toContain("trap cleanup EXIT HUP INT TERM");
+  expect(privatePushJob).toContain("trap - EXIT HUP INT TERM");
+  expect(privatePushJob).toContain('rm -f -- "$config_path"');
+  expect(privatePushJob).toContain(
+    '[[ ! -e "$config_path" && ! -L "$config_path" ]]',
   );
   expect(installer).toContain("bun install --frozen-lockfile --ignore-scripts");
   expect(installer).toContain("umask 077");
@@ -83,8 +92,6 @@ test("CI checks release authority, the contract, committed build, package, and s
   expect(privateWorkflow).not.toContain("CAIL_SANDBOX_SERVICE_OPENAPI");
   expect(privatePushJob).toContain("bun run check");
   expect(privatePushJob).toContain("git diff --exit-code -- dist");
-  expect(privatePrJob).toContain("bun run check");
-  expect(privatePrJob).toContain("git diff --exit-code -- dist");
   expect(readme).toContain("remote GitHub tag");
   expect(readme).toContain("live default-branch head");
   expect(readme).toContain("deleted-version history");
@@ -100,115 +107,49 @@ test("CI checks release authority, the contract, committed build, package, and s
   );
   expect(readme).toContain("required `verify` job is an unconditional");
   expect(readme).toContain("`CI Private` workflow");
+  expect(readme).toContain("pre-merge owner-side");
+  expect(readme).toContain("authenticated exact-SHA proof");
+  expect(readme).toContain("workflow does not use");
+  expect(readme).toContain("`pull_request_target`");
+  expect(readme).not.toContain("same-repository pull-request job");
   expect(contract).not.toContain("candidate");
   expect(contract).not.toContain("unpublished");
   expect(contract).toContain("current registry availability of any version");
 });
 
-type PullRequestActorType = "User" | "Bot";
-
 type PrivateJobEvent = {
-  actorLabel: string;
-  eventName:
-    | "pull_request"
-    | "pull_request_target"
-    | "push"
-    | "workflow_dispatch";
+  eventName: "pull_request" | "push" | "workflow_dispatch";
   ref?: string;
-  headRepository: string;
-  authorType?: PullRequestActorType;
-  senderType?: PullRequestActorType;
 };
-
-function privatePrWorkflowRuns(event: PrivateJobEvent): boolean {
-  return (
-    event.eventName === "pull_request_target" &&
-    event.headRepository === "CUNY-AI-Lab/cail-sandbox-client" &&
-    event.authorType === "User" &&
-    event.senderType === "User"
-  );
-}
 
 function ciPushPrivateJobRuns(event: PrivateJobEvent): boolean {
   return event.eventName === "push" && event.ref === "refs/heads/main";
 }
 
-test("private CI stays package-free for fork and automation pull requests", () => {
-  const fork = {
-    actorLabel: "synthetic-fork-user",
-    eventName: "pull_request_target",
-    headRepository: "contributor/example-fork",
-    authorType: "User",
-    senderType: "User",
-  } as const;
-  const dependabot = {
-    actorLabel: "synthetic-dependency-bot",
-    eventName: "pull_request_target",
-    headRepository: "CUNY-AI-Lab/cail-sandbox-client",
-    authorType: "Bot",
-    senderType: "Bot",
-  } as const;
-  const renovate = {
-    actorLabel: "synthetic-update-bot",
-    eventName: "pull_request_target",
-    headRepository: "CUNY-AI-Lab/cail-sandbox-client",
-    authorType: "Bot",
-    senderType: "Bot",
-  } as const;
-  const unknownAutomation = {
-    actorLabel: "synthetic-unknown-automation",
-    eventName: "pull_request_target",
-    headRepository: "CUNY-AI-Lab/cail-sandbox-client",
-  } as const;
-  const botUpdate = {
-    actorLabel: "synthetic-bot-update",
-    eventName: "pull_request_target",
-    headRepository: "CUNY-AI-Lab/cail-sandbox-client",
-    authorType: "User",
-    senderType: "Bot",
-  } as const;
-
-  expect(privatePrWorkflowRuns(fork)).toBe(false);
-  expect(privatePrWorkflowRuns(dependabot)).toBe(false);
-  expect(privatePrWorkflowRuns(renovate)).toBe(false);
-  expect(privatePrWorkflowRuns(unknownAutomation)).toBe(false);
-  expect(privatePrWorkflowRuns(botUpdate)).toBe(false);
-});
-
-test("private CI keeps push and same-repository human pull requests", () => {
+test("private CI accepts only the trusted default-branch push", () => {
   expect(
     ciPushPrivateJobRuns({
-      actorLabel: "synthetic-push-actor",
       eventName: "push",
       ref: "refs/heads/main",
-      headRepository: "",
     }),
   ).toBe(true);
   expect(
     ciPushPrivateJobRuns({
-      actorLabel: "synthetic-non-main-push-actor",
       eventName: "push",
       ref: "refs/heads/feature",
-      headRepository: "",
     }),
   ).toBe(false);
   expect(
     ciPushPrivateJobRuns({
-      actorLabel: "synthetic-pr-actor",
       eventName: "pull_request",
       ref: "refs/pull/1/merge",
-      headRepository: "CUNY-AI-Lab/cail-sandbox-client",
     }),
   ).toBe(false);
   expect(
-    privatePrWorkflowRuns({
-      actorLabel: "synthetic-human-reviewer",
-      eventName: "pull_request_target",
-      headRepository: "CUNY-AI-Lab/cail-sandbox-client",
-      authorType: "User",
-      senderType: "User",
+    ciPushPrivateJobRuns({
+      eventName: "workflow_dispatch",
     }),
-  ).toBe(true);
+  ).toBe(false);
 });
 
 test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
