@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,12 +24,14 @@ afterEach(() => {
 function run(
   cwd: string,
   command: string[],
+  env?: Record<string, string>,
 ): ReturnType<typeof Bun.spawnSync> {
   return Bun.spawnSync({
     cmd: command,
     cwd,
     stdout: "pipe",
     stderr: "pipe",
+    ...(env === undefined ? {} : { env }),
   });
 }
 
@@ -104,18 +108,195 @@ test("publish workflow uses live authority and Bun token without dirtying checko
   expect(workflow).toContain(
     "/orgs/CUNY-AI-Lab/packages/npm/cail-sandbox-client/versions",
   );
+  expect(workflow).toContain("bun run check:release-ref");
+  expect(workflow).toContain("GITHUB_EVENT_NAME: ${{ github.event_name }}");
+  expect(workflow).toContain("GITHUB_EVENT_ACTION: ${{ github.event.action }}");
+  expect(workflow).toContain("GITHUB_REF: ${{ github.ref }}");
+  expect(workflow).toContain("GITHUB_REF_TYPE: ${{ github.ref_type }}");
+  expect(workflow).toContain("GITHUB_REF_NAME: ${{ github.ref_name }}");
+  expect(workflow).toContain("GITHUB_SHA: ${{ github.sha }}");
+  expect(workflow).toContain("name: Install frozen dependencies");
+  expect(workflow).toContain(
+    "run: bash scripts/install-registry-dependencies.sh",
+  );
+  expect(workflow).toContain("NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
   expect(workflow).toContain("bun run check:release-live");
+  expect(workflow).toMatch(/gh api\s+\\\n\s+--paginate/u);
+  expect(workflow).toContain("jq -s 'add'");
+  expect(workflow).toMatch(
+    /set -o pipefail[\s\S]*gh api\s+\\\n\s+--paginate/u,
+  );
   expect(workflow).toContain(
     "NPM_CONFIG_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
   );
-  expect(workflow).not.toContain("NODE_AUTH_TOKEN");
-  expect(workflow).not.toContain("> .npmrc");
-  expect(workflow).not.toContain("NPM_CONFIG_USERCONFIG");
+  expect(workflow).toContain("permissions:\n  contents: read\n  packages: write");
+  expect(workflow).not.toContain("packages: delete");
+  expect(workflow).not.toContain("packages: admin");
   expect(workflow).not.toContain("actions/setup-node");
+  expect(workflow).not.toContain("Verify release tag matches package version");
+  expect(pkg.scripts?.["check:release-ref"]).toBe(
+    "bun run scripts/check-release-ref.ts",
+  );
   expect(pkg.scripts?.prepublishOnly).toContain("bun run check:clean");
+  expect(pkg.scripts?.prepublishOnly).toContain("bun run check:release-ref");
   expect(pkg.scripts?.prepublishOnly).toContain(
     "bun run check:release-live",
   );
+});
+
+test("trusted inline provenance gate precedes checkout and credentialed execution", () => {
+  const workflow = readFileSync(".github/workflows/publish.yml", "utf8");
+  const stepsMarker = "    steps:\n";
+  const stepsStart = workflow.indexOf(stepsMarker);
+  const gateStart = workflow.indexOf(
+    "      - name: Verify trusted release provenance\n",
+  );
+  const checkoutStart = workflow.indexOf(
+    "      - uses: actions/checkout@",
+  );
+  expect(stepsStart).toBeGreaterThanOrEqual(0);
+  expect(gateStart).toBe(stepsStart + stepsMarker.length);
+  expect(checkoutStart).toBeGreaterThan(gateStart);
+  const trustedGate = workflow.slice(gateStart, checkoutStart);
+  expect(trustedGate).toContain("gh api");
+  expect(trustedGate).toContain("jq");
+  expect(trustedGate).toContain(
+    "/repos/$repository/contents/package.json?ref=$workflow_sha",
+  );
+  expect(trustedGate).toContain("base64 --decode");
+  expect(trustedGate).toContain('expected_tag="v$package_version"');
+  expect(trustedGate).toContain('[[ "$tag_sha" == "$workflow_sha" ]]');
+  expect(trustedGate).not.toContain("bun ");
+  expect(trustedGate).not.toContain("scripts/");
+  expect(workflow).toContain("ref: ${{ github.sha }}");
+  expect(workflow.indexOf("ref: ${{ github.sha }}")).toBeGreaterThan(
+    gateStart,
+  );
+  for (const marker of [
+    "      - uses: actions/checkout@",
+    "      - uses: oven-sh/setup-bun@",
+    "run: bash scripts/install-registry-dependencies.sh",
+    "- run: bun run check\n",
+    "NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "NPM_CONFIG_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+  ]) {
+    expect(gateStart).toBeLessThan(workflow.indexOf(marker));
+  }
+});
+
+test("publish workflow aggregates every active registry page before preflight", () => {
+  const workflow = readFileSync(".github/workflows/publish.yml", "utf8");
+  expect(workflow).toMatch(
+    /set -o pipefail[\s\S]*gh api\s+\\\n\s+--paginate[\s\S]*state=active[\s\S]*jq -s 'add'/u,
+  );
+  expect(workflow).toContain(
+    'CAIL_REGISTRY_VERSIONS_FILE="$RUNNER_TEMP/cail-sandbox-client-package-versions.json"',
+  );
+  expect(workflow.indexOf("jq -s 'add'")).toBeLessThan(
+    workflow.indexOf("bun run check:release-live"),
+  );
+});
+
+test("registry install preserves an ignored npmrc on success and failure", () => {
+  const script = resolve("scripts/install-registry-dependencies.sh");
+  const fakeBin = mkdtempSync(join(tmpdir(), "sandbox-client-fake-bun-"));
+  temporaryRoots.push(fakeBin);
+  const fakeBun = join(fakeBin, "bun");
+  const capture = join(fakeBin, "captured-npmrc");
+  writeFileSync(
+    fakeBun,
+    '#!/bin/sh\ncat .npmrc > "$FAKE_NPMRC_CAPTURE"\n(mode=$(stat -c "%a" .npmrc 2>/dev/null || stat -f "%Lp" .npmrc); printf "%s" "$mode" > "$FAKE_NPMRC_MODE")\nexit "${FAKE_BUN_EXIT:-0}"\n',
+    { mode: 0o755 },
+  );
+
+  for (const exitCode of ["0", "23"]) {
+    const root = mkdtempSync(join(tmpdir(), "sandbox-client-npmrc-"));
+    temporaryRoots.push(root);
+    const original = `pre-existing-${exitCode}\n`;
+    writeFileSync(join(root, ".npmrc"), original, { mode: 0o640 });
+    const originalMode = statSync(join(root, ".npmrc")).mode & 0o777;
+    const modeCapture = join(root, "captured-mode");
+    const result = run(root, ["/bin/bash", script], {
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      RUNNER_TEMP: fakeBin,
+      NODE_AUTH_TOKEN: "fixture-token",
+      FAKE_NPMRC_CAPTURE: capture,
+      FAKE_NPMRC_MODE: modeCapture,
+      FAKE_BUN_EXIT: exitCode,
+    });
+    expect(result.exitCode).toBe(Number(exitCode));
+    expect(readFileSync(join(root, ".npmrc"), "utf8")).toBe(original);
+    expect(statSync(join(root, ".npmrc")).mode & 0o777).toBe(originalMode);
+    expect(readFileSync(modeCapture, "utf8")).toBe("600");
+    expect(readFileSync(capture, "utf8")).toContain(
+      "@cuny-ai-lab:registry=https://npm.pkg.github.com",
+    );
+    expect(readFileSync(capture, "utf8")).toContain(
+      "_authToken=fixture-token",
+    );
+  }
+
+  const cleanRoot = mkdtempSync(join(tmpdir(), "sandbox-client-npmrc-clean-"));
+  temporaryRoots.push(cleanRoot);
+  const cleanResult = run(cleanRoot, ["/bin/bash", script], {
+    PATH: `${fakeBin}:/usr/bin:/bin`,
+    RUNNER_TEMP: fakeBin,
+    NODE_AUTH_TOKEN: "fixture-token",
+    FAKE_NPMRC_CAPTURE: capture,
+    FAKE_NPMRC_MODE: join(cleanRoot, "captured-mode"),
+  });
+  expect(cleanResult.exitCode).toBe(0);
+  expect(existsSync(join(cleanRoot, ".npmrc"))).toBeFalse();
+
+  for (const token of [undefined, ""] as const) {
+    const missingTokenRoot = mkdtempSync(
+      join(tmpdir(), "sandbox-client-npmrc-missing-token-"),
+    );
+    temporaryRoots.push(missingTokenRoot);
+    const original = "pre-existing-token-check\n";
+    const npmrcPath = join(missingTokenRoot, ".npmrc");
+    writeFileSync(npmrcPath, original, { mode: 0o640 });
+    const missingCapture = join(missingTokenRoot, "captured-npmrc");
+    const tokenEnvironment: Record<string, string> = {
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      RUNNER_TEMP: fakeBin,
+      FAKE_NPMRC_CAPTURE: missingCapture,
+    };
+    if (token !== undefined) tokenEnvironment.NODE_AUTH_TOKEN = token;
+    const result = run(
+      missingTokenRoot,
+      ["/bin/bash", script],
+      tokenEnvironment,
+    );
+    expect(result.exitCode).toBe(64);
+    expect(output(result.stderr)).toContain(
+      "NODE_AUTH_TOKEN must be non-empty",
+    );
+    expect(readFileSync(npmrcPath, "utf8")).toBe(original);
+    expect(existsSync(missingCapture)).toBeFalse();
+  }
+
+  const directoryRoot = mkdtempSync(
+    join(tmpdir(), "sandbox-client-npmrc-directory-"),
+  );
+  temporaryRoots.push(directoryRoot);
+  const directoryNpmrc = join(directoryRoot, ".npmrc");
+  mkdirSync(directoryNpmrc);
+  const directoryMarker = join(directoryNpmrc, "keep");
+  writeFileSync(directoryMarker, "untouched\n");
+  const directoryResult = run(directoryRoot, ["/bin/bash", script], {
+    PATH: `${fakeBin}:/usr/bin:/bin`,
+    RUNNER_TEMP: fakeBin,
+    NODE_AUTH_TOKEN: "fixture-token",
+    FAKE_NPMRC_CAPTURE: join(directoryRoot, "captured-npmrc"),
+    FAKE_NPMRC_MODE: join(directoryRoot, "captured-mode"),
+  });
+  expect(directoryResult.exitCode).toBe(65);
+  expect(output(directoryResult.stderr)).toContain(
+    ".npmrc must be a regular file or symlink",
+  );
+  expect(statSync(directoryNpmrc).isDirectory()).toBeTrue();
+  expect(readFileSync(directoryMarker, "utf8")).toBe("untouched\n");
 });
 
 test("publication checkout gate accepts an ordinary clean repository", () => {

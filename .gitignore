@@ -1,6 +1,6 @@
 node_modules/
 .env*
 
-# CI writes a registry credential here during install and removes it in the
-# same step. Ignored so a stray local copy can never be committed.
+# CI writes a registry credential here during install and restores any prior
+# file afterward. Ignored so a stray local copy can never be committed.
 .npmrc

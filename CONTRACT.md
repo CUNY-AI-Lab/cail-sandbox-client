@@ -102,8 +102,13 @@ has SHA-256
 Package-local checks pin the digest and compare a sibling service checkout when
 available.
 
-No migration or persistent-state change is owned here. Sandbox Client `0.1.0`
-and CAIL Log `0.6.0` are published immutable packages. This repository is now a
-`0.1.1` candidate and makes no claim that the successor is published. Rollback
-means pinning published Client `0.1.0`. No Cloudflare resource is created by
-this repository.
+No migration or persistent-state change is owned here. Sandbox Client and CAIL
+Log releases are immutable package artifacts. The source checkout's release
+evidence records receipts observed during review; it does not assert the
+current registry availability of any version. Rollback means pinning a known
+published Client version after release-authority checks. No Cloudflare resource
+is created by this repository. The publish gate resolves the remote release tag
+and requires its commit to equal both the workflow SHA and the live
+default-branch head. Branch protection, deleted-version history, and the
+package's GitHub Actions access or inherited-permissions setting remain external
+release gates.

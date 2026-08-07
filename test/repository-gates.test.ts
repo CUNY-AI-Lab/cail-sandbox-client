@@ -4,14 +4,60 @@ import { readFileSync } from "node:fs";
 
 test("CI checks release authority, the contract, committed build, package, and secrets", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-  expect(workflow).not.toContain("CAIL_SANDBOX_SERVICE_OPENAPI");
-  expect(workflow).toContain(
-    "bun install --frozen-lockfile --ignore-scripts",
+  const installer = readFileSync(
+    "scripts/install-registry-dependencies.sh",
+    "utf8",
   );
-  expect(workflow).toContain("bun run check");
-  expect(workflow).toContain("bun pm pack --dry-run --ignore-scripts");
-  expect(workflow).toContain("git diff --exit-code -- dist");
-  expect(workflow.toLowerCase()).toContain("gitleaks");
+  const readme = readFileSync("README.md", "utf8");
+  const contract = readFileSync("CONTRACT.md", "utf8");
+  const requiredJobStart = workflow.indexOf("  verify:\n");
+  const privateJobStart = workflow.indexOf("  verify-private:\n");
+  expect(requiredJobStart).toBeGreaterThanOrEqual(0);
+  expect(privateJobStart).toBeGreaterThan(requiredJobStart);
+  const requiredJob = workflow.slice(requiredJobStart, privateJobStart);
+  const privateJob = workflow.slice(privateJobStart);
+  expect(workflow).toContain("permissions:\n  contents: read");
+  expect(requiredJob).not.toContain("if:");
+  expect(requiredJob).not.toContain("packages:");
+  expect(requiredJob).not.toContain("secrets.");
+  expect(requiredJob).not.toContain("GITHUB_TOKEN");
+  expect(requiredJob).not.toContain("NODE_AUTH_TOKEN");
+  expect(requiredJob).not.toContain("NPM_CONFIG_TOKEN");
+  expect(requiredJob).toContain("bun pm pack --dry-run --ignore-scripts");
+  expect(requiredJob.toLowerCase()).toContain("gitleaks");
+  expect(privateJob).toContain(
+    "if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') }}",
+  );
+  expect(privateJob).toContain("packages: read");
+  expect(privateJob).toContain("permissions:\n      contents: read\n      packages: read");
+  expect(privateJob).toContain(
+    "run: bash scripts/install-registry-dependencies.sh",
+  );
+  expect(installer).toContain("bun install --frozen-lockfile --ignore-scripts");
+  expect(installer).toContain("umask 077");
+  expect(installer).toContain("trap restore_npmrc EXIT HUP INT TERM");
+  expect(privateJob).not.toContain("packages: write");
+  expect(privateJob).not.toContain("CAIL_SANDBOX_SERVICE_OPENAPI");
+  expect(privateJob).toContain("bun run check");
+  expect(privateJob).toContain("git diff --exit-code -- dist");
+  expect(readme).toContain("remote GitHub tag");
+  expect(readme).toContain("live default-branch head");
+  expect(readme).toContain("deleted-version history");
+  expect(readme).toContain("branch-protection setting");
+  expect(readme).toContain("Manage Actions access");
+  expect(contract).toContain("deleted-version history");
+  expect(contract).toContain("default-branch head");
+  expect(contract).toContain("GitHub Actions access");
+  expect(readme).not.toContain("unpublished");
+  expect(readme).not.toContain("candidate");
+  expect(readme).toContain(
+    "does not assert the current availability of any package version",
+  );
+  expect(readme).toContain("required `verify` job is an unconditional");
+  expect(readme).toContain("`verify-private` job");
+  expect(contract).not.toContain("candidate");
+  expect(contract).not.toContain("unpublished");
+  expect(contract).toContain("current registry availability of any version");
 });
 
 test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
@@ -20,6 +66,7 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
     version?: string;
     dependencies?: Record<string, string>;
     packageManager?: string;
+    repository?: { type?: string; url?: string };
     files?: string[];
     publishConfig?: { access?: string; registry?: string };
     scripts?: {
@@ -31,6 +78,10 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
     name: "@cuny-ai-lab/cail-sandbox-client",
     version: "0.1.1",
     packageManager: "bun@1.3.14",
+    repository: {
+      type: "git",
+      url: "https://github.com/CUNY-AI-Lab/cail-sandbox-client.git",
+    },
   });
   expect(pkg.files).toContain("CONTRACT.md");
   expect(pkg.files).not.toContain("vendor");

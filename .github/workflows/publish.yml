@@ -12,24 +12,159 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify trusted release provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "Publish blocked: $1" >&2
+            exit 1
+          }
+          temp_dir="${RUNNER_TEMP:-}"
+          [[ -n "$temp_dir" ]] || fail "RUNNER_TEMP is required."
+          repository="${GITHUB_REPOSITORY:-}"
+          event_name="${GITHUB_EVENT_NAME:-}"
+          event_action="${GITHUB_EVENT_ACTION:-}"
+          ref="${GITHUB_REF:-}"
+          ref_type="${GITHUB_REF_TYPE:-}"
+          ref_name="${GITHUB_REF_NAME:-}"
+          workflow_sha="${GITHUB_SHA:-}"
+          [[ "$event_name" == "release" && "$event_action" == "published" ]] || \
+            fail "release workflow requires a published release event."
+          [[ "$ref_type" == "tag" ]] || \
+            fail "release workflow requires a tag ref."
+          [[ "$repository" =~ ^[^/]+/[^/]+$ ]] || \
+            fail "GITHUB_REPOSITORY is missing or malformed."
+          [[ "$workflow_sha" =~ ^[0-9a-fA-F]{40}$ ]] || \
+            fail "GITHUB_SHA is malformed."
+          workflow_sha="${workflow_sha,,}"
+          api_header="X-GitHub-Api-Version: 2026-03-10"
+          github_api() {
+            local destination="$1"
+            local endpoint="$2"
+            if ! timeout --signal=TERM 30s gh api \
+              --header "$api_header" \
+              "$endpoint" >"$destination"; then
+              fail "GitHub API request failed or timed out."
+            fi
+          }
+          repository_json="$temp_dir/cail-sandbox-client-trusted-repository.json"
+          github_api "$repository_json" \
+            "/repos/$repository"
+          if ! default_branch="$(jq -er \
+            'if (.default_branch | type) == "string" and (.default_branch | length) > 0 then .default_branch else error("invalid default branch") end' \
+            "$repository_json")"; then
+            fail "GitHub returned an invalid default branch."
+          fi
+          branch_json="$temp_dir/cail-sandbox-client-trusted-branch.json"
+          github_api "$branch_json" \
+            "/repos/$repository/git/ref/heads/$default_branch"
+          if ! branch_sha="$(jq -er \
+            'if (.object | type) == "object" and .object.type == "commit" and (.object.sha | type) == "string" and (.object.sha | test("^[0-9a-fA-F]{40}$")) then .object.sha else error("invalid default-branch ref") end' \
+            "$branch_json")"; then
+            fail "GitHub returned an invalid default-branch ref."
+          fi
+          branch_sha="${branch_sha,,}"
+          [[ "$branch_sha" == "$workflow_sha" ]] || \
+            fail "GITHUB_SHA is not the live default-branch head."
+          package_response="$temp_dir/cail-sandbox-client-trusted-package.json"
+          github_api "$package_response" \
+            "/repos/$repository/contents/package.json?ref=$workflow_sha"
+          if ! package_content="$(jq -er \
+            'if .type == "file" and .encoding == "base64" and (.content | type) == "string" then .content else error("invalid package content") end' \
+            "$package_response")"; then
+            fail "GitHub returned an invalid package.json response."
+          fi
+          if ! package_version="$(printf '%s' "$package_content" | base64 --decode 2>/dev/null | jq -er \
+            'if (.version | type) == "string" and (.version | length) > 0 then .version else error("invalid package version") end')"; then
+            fail "GitHub returned an invalid package version."
+          fi
+          [[ "$package_version" != *[[:space:]/?\#]* ]] || \
+            fail "package.json contains an unsafe release version."
+          expected_tag="v$package_version"
+          [[ "$ref_name" == "$expected_tag" && "$ref" == "refs/tags/$expected_tag" ]] || \
+            fail "release tag does not match package.json at the live default-branch head."
+          tag_ref_json="$temp_dir/cail-sandbox-client-trusted-tag-ref.json"
+          github_api "$tag_ref_json" \
+            "/repos/$repository/git/ref/tags/$expected_tag"
+          if ! tag_sha="$(jq -er \
+            'if (.object | type) == "object" and (.object.sha | type) == "string" and (.object.sha | test("^[0-9a-fA-F]{40}$")) then .object.sha else error("invalid release tag ref") end' \
+            "$tag_ref_json")"; then
+            fail "GitHub returned an invalid release tag ref."
+          fi
+          if ! tag_type="$(jq -er \
+            'if (.object | type) == "object" and (.object.type == "commit" or .object.type == "tag") then .object.type else error("unsupported release tag object") end' \
+            "$tag_ref_json")"; then
+            fail "GitHub returned an unsupported release tag object."
+          fi
+          tag_sha="${tag_sha,,}"
+          annotated_depth=0
+          while [[ "$tag_type" == "tag" ]]; do
+            (( annotated_depth < 3 )) || \
+              fail "release tag has too many nested annotated tags."
+            annotated_depth=$((annotated_depth + 1))
+            annotated_json="$temp_dir/cail-sandbox-client-trusted-tag-$annotated_depth.json"
+            github_api "$annotated_json" \
+              "/repos/$repository/git/tags/$tag_sha"
+            if ! tag_sha="$(jq -er \
+              'if (.object | type) == "object" and (.object.sha | type) == "string" and (.object.sha | test("^[0-9a-fA-F]{40}$")) then .object.sha else error("invalid annotated tag target") end' \
+              "$annotated_json")"; then
+              fail "GitHub returned an invalid annotated tag target."
+            fi
+            if ! tag_type="$(jq -er \
+              'if (.object | type) == "object" and (.object.type == "commit" or .object.type == "tag") then .object.type else error("unsupported annotated tag target") end' \
+              "$annotated_json")"; then
+              fail "GitHub returned an unsupported annotated tag target."
+            fi
+            tag_sha="${tag_sha,,}"
+          done
+          [[ "$tag_type" == "commit" ]] || \
+            fail "release tag does not resolve to a commit."
+          [[ "$tag_sha" == "$workflow_sha" ]] || \
+            fail "release tag commit does not match GITHUB_SHA."
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
-      - run: bun install --frozen-lockfile --ignore-scripts
+      # Bun needs an explicit worktree registry config to resolve the private
+      # published CAIL Log dependency on the release runner. The helper keeps
+      # the token in the step environment and preserves any existing .npmrc.
+      - name: Install frozen dependencies
+        run: bash scripts/install-registry-dependencies.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: bun run check
-      - name: Verify release tag matches package version
-        run: |
-          PACKAGE_VERSION="$(bun -p "require('./package.json').version")"
-          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}"
+      - name: Verify release tag provenance
+        run: bun run check:release-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
       - name: Verify immutable registry version authority
         run: |
+          set -o pipefail
           gh api \
+            --paginate \
             --header 'X-GitHub-Api-Version: 2026-03-10' \
             '/orgs/CUNY-AI-Lab/packages/npm/cail-sandbox-client/versions?per_page=100&state=active' \
-            > "$RUNNER_TEMP/cail-sandbox-client-package-versions.json"
+            | jq -s 'add' > "$RUNNER_TEMP/cail-sandbox-client-package-versions.json"
           CAIL_REGISTRY_VERSIONS_FILE="$RUNNER_TEMP/cail-sandbox-client-package-versions.json" \
             bun run check:release-live
         env:
@@ -39,3 +174,10 @@ jobs:
         env:
           CAIL_REGISTRY_VERSIONS_FILE: ${{ runner.temp }}/cail-sandbox-client-package-versions.json
           NPM_CONFIG_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}

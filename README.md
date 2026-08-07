@@ -112,23 +112,49 @@ bun pm pack --dry-run
 with a sibling service checkout when present, or verifies the pinned digest
 standalone. Set `CAIL_SANDBOX_SERVICE_OPENAPI` to check another explicit file.
 
-Sandbox Client `0.1.0` and CAIL Log `0.6.0` are published in CUNY AI Lab's
-GitHub Packages registry. This `0.1.1` candidate depends on the exact published
-Log version and lockfile artifact. The reviewed Log tarball is 50,269 bytes with
-SHA-256
+The package depends on the exact published CAIL Log `0.6.0` version and lockfile
+artifact. The reviewed Log tarball is 50,269 bytes with SHA-256
 `8689422456eb4b7c672538ba91efb7606e9287df473a99a91ee2a60b5f9ba215`.
-`evidence/registry-publications.json` records the immutable `0.1.0` Client and
-`0.6.0` Log receipts. It explicitly does not claim that this `0.1.1` successor
-has been published.
+The source checkout's `evidence/registry-publications.json` records immutable
+receipts observed during release review; it is not shipped in this package and
+does not assert the current availability of any package version.
 
 Run `bun run check:release-authority` before packaging. It rejects version,
-lockfile, receipt, installed-package, or tarball drift. Publishing also
+lockfile, receipt, installed-package, or tarball drift. Each publication also
 requires an ordinary clean Git checkout and a live GitHub Packages preflight
-that confirms the recorded `0.1.0` version identity and the absence of
-`0.1.1`. The release workflow authenticates Bun through its documented
-`NPM_CONFIG_TOKEN` environment variable, so it does not create credential
-files or dirty the publication checkout. Publishing still requires a
-separately reviewed `v0.1.1` release.
+against the release authority recorded by the source checkout. The release
+workflow resolves the remote GitHub tag (including bounded annotated tags),
+requires the exact `v<package.version>` ref, and checks that its commit equals
+both `GITHUB_SHA` and the live default-branch head; it does not trust only a
+local or shallow checkout. The workflow uses a temporary worktree `.npmrc` for
+the private dependency install, removes it on every exit, and authenticates
+`bun publish` through its documented `NPM_CONFIG_TOKEN` environment variable;
+no credential file remains in the publication checkout. Publishing requires a
+separately reviewed release tag matching the package version.
+
+The `repository` field points to this GitHub repository so GitHub Packages can
+associate the npm package with its source. The private CI job requests only
+`contents: read` and `packages: read`, while the required guard requests
+`contents: read` without package access. The publish workflow requests
+`contents: read` and `packages: write`, with no delete or admin permission. The
+the package's GitHub-side Manage Actions access or inherited-permissions setting
+and deleted-version history are external state and must still be confirmed in
+package settings before publication. The workflow deliberately does not
+request package-delete permission. A deleted or reusable `0.1.1` version is an
+immutable-authority stop condition.
+
+CI's required `verify` job is an unconditional, package-free guard: it checks
+the package shape and scans the checkout and history for secrets without
+requesting package credentials. This guard runs for every push and pull
+request, including forks and Dependabot, so a skipped private job cannot
+satisfy the required check. The separate `verify-private` job installs the
+internal CAIL Log dependency and runs the full source, test, build, and contract
+checks only for pushes and same-repository, non-Dependabot pull requests. Fork
+and Dependabot pull requests therefore receive the safe guard but not the
+private-dependency integration checks; full fork integration needs a separate
+dependency-visibility or isolation design.
+The branch-protection setting that requires `CI / verify` is external state and
+must be confirmed separately.
 
 This client creates no Cloudflare resources and contains no deployment command.
 Isolated service deployment and end-to-end resource cleanup belong to the
