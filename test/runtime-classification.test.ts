@@ -543,7 +543,7 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
           fetchImpl: async () => jsonResponse(tracked.stream),
         });
         const outcome = await Promise.race([
-          client.openapi(jwt).catch((error) => error),
+          client.running(lease, jwt).catch((error) => error),
           Bun.sleep(50).then(() => "stalled"),
         ]);
         expect(outcome, `${runtime.label}/${cleanup}`).not.toBe("stalled");
@@ -808,11 +808,11 @@ test("contains hostile correlation failures before fetch", async () => {
       app: "runtime-classification",
       fetchImpl: async () => {
         fetchCalls += 1;
-        return Response.json({ openapi: "3.1.1" });
+        return Response.json({ running: true });
       },
     });
     const error = await client
-      .openapi(jwt, {
+      .running(lease, jwt, {
         correlation: correlation as never,
       })
       .catch((caught) => caught);
@@ -821,9 +821,7 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(error.message).toBe(
-      "cail-log: correlation must be a readable plain object",
-    );
+    expect(error.message).toBe("Invalid CAIL correlation object.");
     expect(error.message).not.toContain("sentinel");
     expect(rejectedPrototypeReads).toBe(0);
     expect(fetchCalls).toBe(0);
@@ -840,7 +838,7 @@ test("contains hostile correlation failures before fetch", async () => {
       },
     );
     const forgedError = await client
-      .openapi(jwt, {
+      .running(lease, jwt, {
         correlation: forgedCorrelation as never,
       })
       .catch((caught) => caught);
@@ -849,39 +847,37 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(forgedError.message).toBe(
-      "cail-log: correlation must be a readable plain object",
-    );
+    expect(forgedError.message).toBe("Invalid CAIL correlation object.");
     expect(forgedError.message).not.toContain("sentinel");
     expect(fetchCalls).toBe(0);
   }
 });
 
-test("retains only the vendored static correlation validation messages", async () => {
+test("uses one safe correlation validation message", async () => {
   const cases = [
     [
       null,
-      "cail-log: correlation must be a readable plain object",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, trace_id: "bad" },
-      "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, span_id: "bad" },
-      "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, request_id: "bad" },
-      "cail-log: request_id must be a lowercase UUID v4 or v7",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, trace_flags: 2 },
-      "cail-log: trace_flags must be 0 or 1",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, tracestate: "bad value" },
-      "cail-log: tracestate must be a structurally valid W3C tracestate list",
+      "Invalid CAIL correlation object.",
     ],
   ] as const;
   for (const runtime of runtimes) {
@@ -889,10 +885,10 @@ test("retains only the vendored static correlation validation messages", async (
       const client = runtime.create({
         baseUrl: "https://sandbox.invalid",
         app: "runtime-classification",
-        fetchImpl: async () => Response.json({ openapi: "3.1.1" }),
+        fetchImpl: async () => Response.json({ running: true }),
       });
       const error = await client
-        .openapi(jwt, {
+        .running(lease, jwt, {
           correlation: correlation as never,
         })
         .catch((caught) => caught);

@@ -198,7 +198,7 @@ test("custom stalled JSON reader observes a late provider rejection", async () =
   const onUnhandled = (error: unknown) => unhandled.push(error);
   process.on("unhandledRejection", onUnhandled);
   try {
-    const pending = client(async () => response).openapi(jwt, {
+    const pending = client(async () => response).running(lease, jwt, {
       signal: controller.signal,
     });
     await Bun.sleep(0);
@@ -225,7 +225,7 @@ test("caller abort unlocks a real JSON body when cleanup stalls", async () => {
   const controller = new AbortController();
   const stalled = nativeStalledBody("stall");
   const response = new Response(stalled.body, { headers: jsonHeaders });
-  const pending = client(async () => response).openapi(jwt, {
+  const pending = client(async () => response).running(lease, jwt, {
     signal: controller.signal,
   });
   await Bun.sleep(0);
@@ -394,7 +394,7 @@ test("JSON overflow cancels once with the primary boundary error", async () => {
 
   const response = new Response(body, { headers: jsonHeaders });
   const error = await client(async () => response)
-    .openapi(jwt)
+    .running(lease, jwt)
     .catch((caught) => caught);
   expect(error).toMatchObject({
     code: "invalid_response",
