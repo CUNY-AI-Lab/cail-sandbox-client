@@ -39,7 +39,8 @@ ID without reminting it.
 
 Lifecycle responses carry `instance_class: "lite" | "basic" | "standard-1"`. The client exposes no
 arbitrary image, network, mount, tunnel, pool, persistence, or background
-process controls.
+process controls. Cloudflare Computer owns the durable Workspace filesystem and
+container runtime; that Workspace is networked and supports outbound HTTPS.
 
 ## Usage semantics
 
@@ -74,9 +75,9 @@ loopback hosts, and rejects redirects.
 
 File phase authorization is service-owned: `writeFile` is ready-only, while
 `readFile` is allowed in ready or terminal. Both fail with `409 operation_state`
-while executing or ordinarily ambiguous; terminal writes also fail. A persisted
-file-write ambiguity returns retryable `503 file_write_ambiguous` for either
-file method until the operation is reconciled. The client forwards these strict
+while writing, deleting, or executing; terminal writes also fail. The service
+reads and writes directly on the lease Workspace filesystem, with no staging,
+rename, or file-write ambiguity protocol. The client forwards these strict
 service outcomes without adding a local operation-state model.
 
 Typed server errors require the exact nested CAIL envelope, both equal request

@@ -22,8 +22,9 @@ accepts HTTPS origins and plain HTTP only on exact loopback hosts, disables
 redirect following, strips competing credential headers, and never retries.
 
 The service, not this client, verifies identity and owns subject/app isolation,
-lease state, offline execution policy, metering, and settlement. The service
-keeps the volatile Cloudflare Sandbox SDK behind its own adapter.
+lease state, usage reservation, and settlement. It wraps the official
+`@cloudflare/computer` library, which owns each lease's durable Workspace and
+container runtime. The Workspace is networked and supports outbound HTTPS.
 
 ## Example
 
@@ -95,7 +96,7 @@ automatic replay.
 
 All calls accept an `AbortSignal`; `defaultTimeoutMs` adds a client-wide upper
 bound. Cancellation stops local transport work but does not prove remote
-rollback. Do not replay exec or file writes after an ambiguous failure.
+rollback. Do not automatically replay an `exec` after an ambiguous failure.
 
 ## Verification and consumption
 
