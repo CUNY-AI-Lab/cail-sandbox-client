@@ -10,7 +10,6 @@ const jwt = { kind: "jwt" as const, token: "session-token" };
 const createInput = {
   scopeKey: "scope-key-000000000000000000000000000001",
   idempotencyKey: "create-key-0000000000000000000000000001",
-  profile: "offline-code" as const,
 };
 const lease = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -34,7 +33,6 @@ const leaseWire = {
   expires_at: "2026-07-12T12:00:00.000Z",
   lease_capability: lease.leaseCapability,
   lease_generation: lease.leaseGeneration,
-  profile: "offline-code",
   instance_class: "lite",
 };
 const operationWire = {
@@ -83,7 +81,6 @@ test("owns exactly one CAIL credential and app header", async () => {
   expect(await seen.json()).toEqual({
     scope_key: createInput.scopeKey,
     idempotency_key: createInput.idempotencyKey,
-    profile: "offline-code",
   });
   expect(created).toEqual({
     id: lease.id,
@@ -91,7 +88,6 @@ test("owns exactly one CAIL credential and app header", async () => {
     expiresAt: "2026-07-12T12:00:00.000Z",
     leaseCapability: lease.leaseCapability,
     leaseGeneration: 1,
-    profile: "offline-code",
     instanceClass: "lite",
   });
   expect("call" in client).toBeFalse();
@@ -163,9 +159,7 @@ test("reads strict aggregate usage and immutable per-lease settlement", async ()
       const request = new Request(input, init);
       seen.push(request);
       return Response.json(
-        request.url.endsWith(`/usage/${lease.id}`)
-          ? settlementWire
-          : usageWire,
+        request.url.endsWith(`/usage/${lease.id}`) ? settlementWire : usageWire,
       );
     },
   });
@@ -435,8 +429,6 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
           active_leases: 1,
         });
       }
-      if (request.url.endsWith("/openapi.json"))
-        return Response.json({ openapi: "3.1.1" });
       if (request.method === "GET")
         return new Response("data", {
           headers: { "content-type": "application/octet-stream" },
@@ -455,7 +447,7 @@ test("forwards AbortSignal on every typed sandbox operation", async () => {
   await client.destroy(lease, jwt, options);
   await client.usage(jwt, options);
   await client.settlement(lease.id, jwt, options);
-  await client.openapi(jwt, options);
+  await client.running(lease, jwt, options);
   controller.abort();
   expect(seen).toHaveLength(10);
   expect(seen.every((signal) => signal.aborted)).toBeTrue();
@@ -756,7 +748,7 @@ test("normalizes invalid JSON and null success bodies to invalid_response", asyn
   }
 });
 
-test("requires the OpenAPI media type for JSON success responses", async () => {
+test("requires the JSON media type for structured success responses", async () => {
   for (const contentType of [null, "text/plain", "application/problem+json"]) {
     const headers = new Headers({
       "x-cail-request-id": responseRequestId,
@@ -968,7 +960,7 @@ test("requires exact error metadata and rejects conflicting aliases", async () =
   });
 });
 
-test("fails closed on nested errors outside the OpenAPI schema", async () => {
+test("fails closed on nested errors outside the service error schema", async () => {
   for (const error of [
     {
       message: "No.",
@@ -1143,7 +1135,7 @@ test("rejects a second terminal event instead of accepting the first", async () 
     app: "kale",
     fetchImpl: async () =>
       sseResponse(
-          'event: exit\ndata: {"exit_code":0}\n\n' +
+        'event: exit\ndata: {"exit_code":0}\n\n' +
           'event: error\ndata: {"code":"late","message":"Late.","request_id":"33333333-3333-4333-8333-333333333333"}\n\n',
       ),
   });
@@ -1325,11 +1317,13 @@ test("normalizes a baseUrl path prefix without string-concatenation ambiguity", 
     app: "kale",
     fetchImpl: async (input, init) => {
       seen = new Request(input, init);
-      return Response.json({ openapi: "3.1.1" });
+      return Response.json(runningWire);
     },
   });
-  await client.openapi(jwt);
-  expect(seen.url).toBe("https://x/api/sandbox/v1/openapi.json");
+  await client.running(lease, jwt);
+  expect(seen.url).toBe(
+    "https://x/api/sandbox/v1/sandbox/11111111-1111-4111-8111-111111111111/running",
+  );
 });
 
 test("preserves mid-stream transport errors and response metadata", async () => {

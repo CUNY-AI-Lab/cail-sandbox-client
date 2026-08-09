@@ -1,114 +1,84 @@
 # CAIL Sandbox client contract
 
-Status: reviewed against `cail-sandbox-service`
-`2fac839481aa38710ac45596c3e56227a85c02b7`.
-
-## Owned boundary
-
-This package owns request construction, local input validation, strict response
-parsing, SSE framing, and Web `AbortSignal` composition for the authenticated
-`/sandbox/v1` HTTP surface. It does not own identity verification,
+The service repository owns the OpenAPI definition. This package owns the
+typed `/sandbox/v1` wire client: request construction, local input validation,
+authentication and correlation headers, strict response and error parsing, SSE
+framing, and `AbortSignal` behavior. It does not own identity verification,
 authorization, execution placement, policy, metering, settlement, or durable
 state.
 
-The client sends one `X-CAIL-Identity-JWT` plus configured `X-CAIL-App`.
-Authenticated identity comes only from the service's exact-audience verifier.
-Lease, session, operation, and file calls add only the capabilities required by
-the OpenAPI. The client never derives a principal or accepts one in request
-JSON.
+This v0.1.1 candidate targets the isolated Computer-backed sandbox
+constellation. Existing production integrations remain separate; this
+contract does not define a migration or compatibility layer.
 
-Request correlation follows the accepted `cail-log` source contract. The public
-helpers adopt and propagate canonical lowercase UUIDv4 and UUIDv7 request IDs;
-other UUID versions, variants, casing, and malformed values are rejected or
-replaced as defined by `cail-log`. Lifecycle calls preserve the accepted request
-ID without reminting it.
+## Requests
+
+Every request carries one `X-CAIL-Identity-JWT` and the configured
+`X-CAIL-App`. Lease, session, operation, and file calls add only the
+capabilities required by the service. The client never derives a principal or
+accepts one in request JSON. Redirects are rejected and requests are never
+retried automatically.
+
+Correlation uses the accepted `cail-log` types and headers. Canonical request
+IDs are preserved when supplied; malformed correlation input is rejected with
+the fixed `Invalid CAIL correlation object.` client error.
 
 ## HTTP surface
 
-| Client call | HTTP operation | Success |
-| --- | --- | --- |
-| `create` | `POST /sandbox/v1/sandbox` | 201 strict lifecycle |
-| `running` | `GET /sandbox/v1/sandbox/{id}/running` | 200 strict status |
-| `destroy` | `DELETE /sandbox/v1/sandbox/{id}` | 204 |
-| `usage` | `GET /sandbox/v1/usage` | 200 strict UTC-day snapshot |
-| `settlement` | `GET /sandbox/v1/usage/{leaseId}` | 200 immutable settlement |
-| `createSession` | `POST /sandbox/v1/sandbox/{id}/session` | 201 strict session |
-| `destroySession` | `DELETE /sandbox/v1/sandbox/{id}/session/{sid}` | 204 |
-| `readFile` | `GET /sandbox/v1/sandbox/{id}/file/{path}` | 200 raw bytes |
-| `writeFile` | `PUT /sandbox/v1/sandbox/{id}/file/{path}` | 200 `{ok:true}` |
-| `exec` | `POST /sandbox/v1/sandbox/{id}/exec` | 200 SSE |
-| `openapi` | `GET /sandbox/v1/openapi.json` | 200 JSON |
+| Client call      | HTTP operation                                  | Success                     |
+| ---------------- | ----------------------------------------------- | --------------------------- |
+| `create`         | `POST /sandbox/v1/sandbox`                      | 201 strict lifecycle        |
+| `running`        | `GET /sandbox/v1/sandbox/{id}/running`          | 200 strict status           |
+| `destroy`        | `DELETE /sandbox/v1/sandbox/{id}`               | 204                         |
+| `usage`          | `GET /sandbox/v1/usage`                         | 200 strict UTC-day snapshot |
+| `settlement`     | `GET /sandbox/v1/usage/{leaseId}`               | 200 immutable settlement    |
+| `createSession`  | `POST /sandbox/v1/sandbox/{id}/session`         | 201 strict session          |
+| `destroySession` | `DELETE /sandbox/v1/sandbox/{id}/session/{sid}` | 204                         |
+| `readFile`       | `GET /sandbox/v1/sandbox/{id}/file/{path}`      | 200 raw bytes               |
+| `writeFile`      | `PUT /sandbox/v1/sandbox/{id}/file/{path}`      | 200 `{ok:true}`             |
+| `exec`           | `POST /sandbox/v1/sandbox/{id}/exec`            | 200 SSE                     |
 
-Create accepts only `profile: "offline-code"`. Lifecycle responses also carry
-`instance_class: "lite" | "basic" | "standard-1"`. The client exposes no
-arbitrary image, network, mount, tunnel, pool, persistence, or background
-process controls.
+Lifecycle responses carry `instance_class: "lite" | "basic" | "standard-1"`.
+The client exposes no arbitrary image, network, mount, tunnel, pool,
+persistence, or background process controls. The Computer-backed service owns
+the durable Workspace and container runtime.
 
-## Usage semantics
+## Usage and settlement
 
-Aggregate usage is a current UTC-day snapshot:
-
-```text
-period, unit=mib_milliseconds, limit, used, reserved, remaining, active_leases
-```
-
-All quantities are nonnegative safe integers, `active_leases` is 0 or 1, and
-`remaining = max(0, limit - used - reserved)`. This is separate from model
-quota.
-
-Per-lease settlement is an immutable terminal record:
+`usage()` returns the current UTC-day snapshot in integer
+`mib_milliseconds`:
 
 ```text
-lease_id, period_start, period_end, unit=mib_milliseconds,
-quantity, settled_at, state=settled
+period, unit, limit, used, reserved, remaining, active_leases
 ```
 
-`quantity` is a nonnegative safe integer. The service returns 404 before
-settlement and for a subject/app mismatch. The bounded service tombstone
-returns the same record after an initial or idempotent destroy. Diagnostic log
-events are not settlement authority.
+Quantities are nonnegative safe integers, `active_leases` is 0 or 1, and
+`remaining = max(0, limit - used - reserved)`. `settlement(leaseId)` returns
+the immutable terminal record for an owned lease:
+
+```text
+lease_id, period_start, period_end, unit, quantity, settled_at, state=settled
+```
+
+The service returns 404 before settlement and for a subject or app mismatch.
+The client does not turn diagnostic events into accounting authority.
 
 ## Validation and failures
 
-The client rejects malformed IDs, capabilities, paths, profile values,
-timestamps, dates, quantities, response keys, media types, success statuses,
-and lease-ID mismatches. It accepts only HTTPS, with HTTP restricted to exact
-loopback hosts, and rejects redirects.
+The client rejects malformed IDs, capabilities, paths, timestamps, dates,
+quantities, response keys, media types, success statuses, and lease-ID
+mismatches. It accepts HTTPS origins, with HTTP restricted to exact loopback
+hosts.
 
-File phase authorization is service-owned: `writeFile` is ready-only, while
-`readFile` is allowed in ready or terminal. Both fail with `409 operation_state`
-while executing or ordinarily ambiguous; terminal writes also fail. A persisted
-file-write ambiguity returns retryable `503 file_write_ambiguous` for either
-file method until the operation is reconciled. The client forwards these strict
-service outcomes without adding a local operation-state model.
-
-Typed server errors require the exact nested CAIL envelope, both equal request
-ID headers, `application/json`, and lowercase `x-should-retry`. Malformed
+Typed server errors require the exact nested CAIL envelope, matching request-ID
+headers, `application/json`, and lowercase `x-should-retry`. Malformed
 authority responses fail closed. The client performs no automatic retries.
 
-SSE accepts exact JSON `{ "data": "<base64>" }` objects for
-`stdout`/`stderr`, followed by exactly one JSON `exit` or `error`. Bare base64
-is the upstream Cloudflare Bridge wire shape and is not accepted at the CAIL
-public boundary.
-The terminal is withheld until EOF. Unknown, malformed, duplicate,
-post-terminal, oversized, and unterminated streams are rejected. A transport
-failure or abort can leave the remote outcome ambiguous.
+SSE accepts exact JSON `{ "data": "<base64>" }` objects for `stdout` and
+`stderr`, followed by exactly one JSON `exit` or `error` event. Unknown,
+malformed, duplicate, post-terminal, oversized, and unterminated streams are
+rejected. A transport failure or abort can leave the remote outcome ambiguous.
 
-## Provenance and release
-
-The packaged OpenAPI is byte-identical to the accepted service artifact and
-has SHA-256
-`07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26`.
-Package-local checks pin the digest and compare a sibling service checkout when
-available.
-
-No migration or persistent-state change is owned here. Sandbox Client and CAIL
-Log releases are immutable package artifacts. The source checkout's release
-evidence records receipts observed during review; it does not assert the
-current registry availability of any version. Rollback means pinning a known
-published Client version after release-authority checks. No Cloudflare resource
-is created by this repository. The publish gate resolves the remote release tag
-and requires its commit to equal both the workflow SHA and the live
-default-branch head. Branch protection, deleted-version history, and the
-package's GitHub Actions access or inherited-permissions setting remain external
-release gates.
+All calls accept an `AbortSignal`; `defaultTimeoutMs` adds a client-wide upper
+bound. Cancellation stops local transport work but does not prove remote
+rollback. Do not replay exec or file writes after an ambiguous failure.
