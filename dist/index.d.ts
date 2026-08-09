@@ -5,7 +5,6 @@ export type CailSandboxCredential = {
     kind: "jwt";
     token: string;
 };
-export type SandboxProfile = "offline-code";
 export type SandboxInstanceClass = "lite" | "basic" | "standard-1";
 export interface SandboxLease {
     id: string;
@@ -15,7 +14,6 @@ export interface SandboxLease {
 export interface SandboxLifecycle extends SandboxLease {
     state: "active";
     expiresAt: string;
-    profile: SandboxProfile;
     instanceClass: SandboxInstanceClass;
 }
 export interface SandboxOperation {
@@ -28,7 +26,6 @@ export interface SandboxOperation {
 export interface CreateSandboxInput {
     scopeKey: string;
     idempotencyKey: string;
-    profile: SandboxProfile;
 }
 export interface CreateOperationInput {
     operationId: string;
@@ -105,7 +102,6 @@ export interface CailSandboxClient {
     readFile(lease: SandboxLease, operation: SandboxOperation, path: string, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Response>;
     writeFile(lease: SandboxLease, operation: SandboxOperation, path: string, body: BodyInit, credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<void>;
     exec(lease: SandboxLease, operation: SandboxOperation, command: string, credential: CailSandboxCredential, options?: SandboxExecOptions): Promise<AsyncGenerator<CommandOutputEvent | CommandTerminalEvent>>;
-    openapi(credential: CailSandboxCredential, options?: SandboxCallOptions): Promise<Record<string, unknown>>;
 }
 export declare function createCailSandboxClient(options: SandboxClientOptions): CailSandboxClient;
 //# sourceMappingURL=index.d.ts.map

@@ -37,10 +37,8 @@ ID without reminting it.
 | `readFile` | `GET /sandbox/v1/sandbox/{id}/file/{path}` | 200 raw bytes |
 | `writeFile` | `PUT /sandbox/v1/sandbox/{id}/file/{path}` | 200 `{ok:true}` |
 | `exec` | `POST /sandbox/v1/sandbox/{id}/exec` | 200 SSE |
-| `openapi` | `GET /sandbox/v1/openapi.json` | 200 JSON |
 
-Create accepts only `profile: "offline-code"`. Lifecycle responses also carry
-`instance_class: "lite" | "basic" | "standard-1"`. The client exposes no
+Lifecycle responses carry `instance_class: "lite" | "basic" | "standard-1"`. The client exposes no
 arbitrary image, network, mount, tunnel, pool, persistence, or background
 process controls.
 
@@ -70,7 +68,7 @@ events are not settlement authority.
 
 ## Validation and failures
 
-The client rejects malformed IDs, capabilities, paths, profile values,
+The client rejects malformed IDs, capabilities, and paths,
 timestamps, dates, quantities, response keys, media types, success statuses,
 and lease-ID mismatches. It accepts only HTTPS, with HTTP restricted to exact
 loopback hosts, and rejects redirects.

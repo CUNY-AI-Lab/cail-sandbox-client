@@ -35,14 +35,6 @@ const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get;
-const CAIL_LOG_CORRELATION_MESSAGES = new Set([
-    "cail-log: correlation must be a readable plain object",
-    "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
-    "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
-    "cail-log: request_id must be a lowercase UUID v4 or v7",
-    "cail-log: trace_flags must be 0 or 1",
-    "cail-log: tracestate must be a structurally valid W3C tracestate list",
-]);
 const ERROR_TYPES = new Set([
     "invalid_request_error",
     "authentication_error",
@@ -70,28 +62,6 @@ function isCailDetails(value) {
 }
 function hasOnlyKeys(value, allowed) {
     return Object.keys(value).every((key) => allowed.includes(key));
-}
-function ownDataValue(value, key) {
-    if ((typeof value !== "object" || value === null) &&
-        typeof value !== "function") {
-        return undefined;
-    }
-    try {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        return descriptor && "value" in descriptor
-            ? descriptor.value
-            : undefined;
-    }
-    catch {
-        return undefined;
-    }
-}
-function safeCorrelationErrorMessage(error) {
-    const message = ownDataValue(error, "message");
-    return typeof message === "string" &&
-        CAIL_LOG_CORRELATION_MESSAGES.has(message)
-        ? message
-        : undefined;
 }
 function credentialHeaders(credential) {
     const candidate = credential;
@@ -466,7 +436,6 @@ async function parseLifecycle(response) {
         "expires_at",
         "lease_capability",
         "lease_generation",
-        "profile",
         "instance_class",
     ]) ||
         typeof body.id !== "string" ||
@@ -477,7 +446,6 @@ async function parseLifecycle(response) {
         !CONTROL_VALUE.test(body.lease_capability) ||
         !Number.isInteger(body.lease_generation) ||
         body.lease_generation < 1 ||
-        body.profile !== "offline-code" ||
         !["lite", "basic", "standard-1"].includes(String(body.instance_class))) {
         throw responseError(response, "invalid_response", message);
     }
@@ -487,7 +455,6 @@ async function parseLifecycle(response) {
         expiresAt: body.expires_at,
         leaseCapability: body.lease_capability,
         leaseGeneration: body.lease_generation,
-        profile: "offline-code",
         instanceClass: body.instance_class,
     };
 }
@@ -695,9 +662,8 @@ export function createCailSandboxClient(options) {
                     headers.set(name, value);
                 }
             }
-            catch (error) {
-                throw new CailSandboxError("invalid_correlation", safeCorrelationErrorMessage(error) ??
-                    "Invalid CAIL correlation object.", 0);
+            catch {
+                throw new CailSandboxError("invalid_correlation", "Invalid CAIL correlation object.", 0);
             }
         }
         const callerSignal = callOptions?.signal ?? init.signal;
@@ -728,16 +694,12 @@ export function createCailSandboxClient(options) {
     };
     return {
         async create(input, credential, callOptions) {
-            if (input.profile !== "offline-code") {
-                throw new Error('profile must be "offline-code"');
-            }
             const response = await call("/sandbox/v1/sandbox", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
                     scope_key: controlValue(input.scopeKey, "scopeKey"),
                     idempotency_key: controlValue(input.idempotencyKey, "idempotencyKey"),
-                    profile: input.profile,
                 }),
             }, credential, callOptions);
             return parseLifecycle(requireStatus(response, 201));
@@ -824,11 +786,6 @@ export function createCailSandboxClient(options) {
                 signal: execOptions.signal,
             }, credential, execOptions);
             return parseCommandEvents(requireStatus(response, 200));
-        },
-        async openapi(credential, callOptions) {
-            const response = await call("/sandbox/v1/openapi.json", {}, credential, callOptions);
-            const body = await parseSuccessRecord(requireStatus(response, 200), "Sandbox OpenAPI response was malformed.");
-            return body;
         },
     };
 }

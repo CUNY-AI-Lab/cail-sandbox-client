@@ -44,7 +44,6 @@ const lease = await client.create(
   {
     scopeKey: conversationScopeKey,
     idempotencyKey: crypto.randomUUID(),
-    profile: "offline-code",
   },
   identity,
 );

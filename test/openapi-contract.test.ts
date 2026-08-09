@@ -47,7 +47,7 @@ test("an explicitly configured missing service contract fails closed", () => {
   );
 });
 
-test("thin client wraps every authenticated sandbox operation", () => {
+test("thin client wraps every owned authenticated sandbox operation", () => {
   const client = readFileSync("src/index.ts", "utf8");
   const operationIds = Object.values(OPENAPI.paths).flatMap((item) =>
     Object.values(item).flatMap((operation) =>
@@ -57,11 +57,10 @@ test("thin client wraps every authenticated sandbox operation", () => {
         ? [String(operation.operationId)]
         : [],
     ),
-  );
+  ).filter((operationId) => operationId !== "getOpenApi");
   expect(new Set(operationIds)).toEqual(
     new Set([
       "health",
-      "getOpenApi",
       "getSandboxUsage",
       "getSandboxSettlement",
       "createSandbox",
@@ -86,7 +85,6 @@ test("thin client wraps every authenticated sandbox operation", () => {
     "writeFile(",
     "createSession(",
     "destroySession(",
-    "openapi(",
   ]) {
     expect(client).toContain(method);
   }
