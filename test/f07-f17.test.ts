@@ -198,7 +198,7 @@ test("custom stalled JSON reader observes a late provider rejection", async () =
   const onUnhandled = (error: unknown) => unhandled.push(error);
   process.on("unhandledRejection", onUnhandled);
   try {
-    const pending = client(async () => response).openapi(jwt, {
+    const pending = client(async () => response).running(lease, jwt, {
       signal: controller.signal,
     });
     await Bun.sleep(0);
@@ -225,7 +225,7 @@ test("caller abort unlocks a real JSON body when cleanup stalls", async () => {
   const controller = new AbortController();
   const stalled = nativeStalledBody("stall");
   const response = new Response(stalled.body, { headers: jsonHeaders });
-  const pending = client(async () => response).openapi(jwt, {
+  const pending = client(async () => response).running(lease, jwt, {
     signal: controller.signal,
   });
   await Bun.sleep(0);
@@ -394,7 +394,7 @@ test("JSON overflow cancels once with the primary boundary error", async () => {
 
   const response = new Response(body, { headers: jsonHeaders });
   const error = await client(async () => response)
-    .openapi(jwt)
+    .running(lease, jwt)
     .catch((caught) => caught);
   expect(error).toMatchObject({
     code: "invalid_response",
@@ -475,15 +475,16 @@ test("cail-log request-id validation also fences SSE terminal errors", async () 
       "x-cail-request-id": requestId,
       "x-request-id": requestId,
     };
-    const events = await client(async () =>
-      new Response(
-        `event: error\ndata: ${JSON.stringify({
-          code: "command_failed",
-          message: "No.",
-          request_id: requestId,
-        })}\n\n`,
-        { headers },
-      ),
+    const events = await client(
+      async () =>
+        new Response(
+          `event: error\ndata: ${JSON.stringify({
+            code: "command_failed",
+            message: "No.",
+            request_id: requestId,
+          })}\n\n`,
+          { headers },
+        ),
     ).exec(lease, operation, "true", jwt);
     const output = [];
     for await (const event of events) output.push(event);
@@ -496,15 +497,16 @@ test("cail-log request-id validation also fences SSE terminal errors", async () 
       "x-cail-request-id": responseRequestId,
       "x-request-id": responseRequestId,
     };
-    const events = await client(async () =>
-      new Response(
-        `event: error\ndata: ${JSON.stringify({
-          code: "command_failed",
-          message: "No.",
-          request_id: requestId,
-        })}\n\n`,
-        { headers },
-      ),
+    const events = await client(
+      async () =>
+        new Response(
+          `event: error\ndata: ${JSON.stringify({
+            code: "command_failed",
+            message: "No.",
+            request_id: requestId,
+          })}\n\n`,
+          { headers },
+        ),
     ).exec(lease, operation, "true", jwt);
     await expect(
       (async () => {

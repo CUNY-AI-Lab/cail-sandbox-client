@@ -14,16 +14,12 @@ export {
   outboundCorrelationHeaders,
   TRACEPARENT_HEADER,
 } from "@cuny-ai-lab/cail-log";
-export type {
-  CailCorrelation,
-  CailHeadersLike,
-} from "@cuny-ai-lab/cail-log";
+export type { CailCorrelation, CailHeadersLike } from "@cuny-ai-lab/cail-log";
 
 export type CailSandboxCredential = {
   kind: "jwt";
   token: string;
 };
-export type SandboxProfile = "offline-code";
 export type SandboxInstanceClass = "lite" | "basic" | "standard-1";
 export interface SandboxLease {
   id: string;
@@ -33,7 +29,6 @@ export interface SandboxLease {
 export interface SandboxLifecycle extends SandboxLease {
   state: "active";
   expiresAt: string;
-  profile: SandboxProfile;
   instanceClass: SandboxInstanceClass;
 }
 export interface SandboxOperation {
@@ -46,7 +41,6 @@ export interface SandboxOperation {
 export interface CreateSandboxInput {
   scopeKey: string;
   idempotencyKey: string;
-  profile: SandboxProfile;
 }
 export interface CreateOperationInput {
   operationId: string;
@@ -189,10 +183,6 @@ export interface CailSandboxClient {
     credential: CailSandboxCredential,
     options?: SandboxExecOptions,
   ): Promise<AsyncGenerator<CommandOutputEvent | CommandTerminalEvent>>;
-  openapi(
-    credential: CailSandboxCredential,
-    options?: SandboxCallOptions,
-  ): Promise<Record<string, unknown>>;
 }
 
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -201,8 +191,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_COMMAND_CHARS = 16_384;
 const MAX_OUTPUT_EVENT_BYTES = 1_048_576;
-const MAX_OUTPUT_EVENT_BASE64_CHARS =
-  4 * Math.ceil(MAX_OUTPUT_EVENT_BYTES / 3);
+const MAX_OUTPUT_EVENT_BASE64_CHARS = 4 * Math.ceil(MAX_OUTPUT_EVENT_BYTES / 3);
 const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 =
@@ -211,14 +200,6 @@ const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(
   DOMException.prototype,
   "name",
 )?.get;
-const CAIL_LOG_CORRELATION_MESSAGES = new Set([
-  "cail-log: correlation must be a readable plain object",
-  "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
-  "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
-  "cail-log: request_id must be a lowercase UUID v4 or v7",
-  "cail-log: trace_flags must be 0 or 1",
-  "cail-log: tracestate must be a structurally valid W3C tracestate list",
-]);
 const ERROR_TYPES = new Set([
   "invalid_request_error",
   "authentication_error",
@@ -262,31 +243,6 @@ function hasOnlyKeys(
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function ownDataValue(value: unknown, key: PropertyKey): unknown {
-  if (
-    (typeof value !== "object" || value === null) &&
-    typeof value !== "function"
-  ) {
-    return undefined;
-  }
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor && "value" in descriptor
-      ? descriptor.value
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function safeCorrelationErrorMessage(error: unknown): string | undefined {
-  const message = ownDataValue(error, "message");
-  return typeof message === "string" &&
-    CAIL_LOG_CORRELATION_MESSAGES.has(message)
-    ? message
-    : undefined;
-}
-
 function credentialHeaders(credential: CailSandboxCredential) {
   const candidate = credential as { kind?: unknown; token?: unknown };
   if (
@@ -302,9 +258,7 @@ function credentialHeaders(credential: CailSandboxCredential) {
 }
 
 type ResponseCleanupOperation =
-  | "body_cancel"
-  | "reader_cancel"
-  | "reader_release";
+  "body_cancel" | "reader_cancel" | "reader_release";
 
 function logResponseCleanupDiagnostic(
   operation: ResponseCleanupOperation,
@@ -771,7 +725,9 @@ function isFullDate(value: unknown): value is string {
     30,
     31,
   ];
-  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]!;
+  return (
+    month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]!
+  );
 }
 
 function isNonnegativeSafeInteger(value: unknown): value is number {
@@ -788,7 +744,6 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
       "expires_at",
       "lease_capability",
       "lease_generation",
-      "profile",
       "instance_class",
     ]) ||
     typeof body.id !== "string" ||
@@ -799,7 +754,6 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
     !CONTROL_VALUE.test(body.lease_capability) ||
     !Number.isInteger(body.lease_generation) ||
     (body.lease_generation as number) < 1 ||
-    body.profile !== "offline-code" ||
     !["lite", "basic", "standard-1"].includes(String(body.instance_class))
   ) {
     throw responseError(response, "invalid_response", message);
@@ -810,7 +764,6 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
     expiresAt: body.expires_at,
     leaseCapability: body.lease_capability,
     leaseGeneration: body.lease_generation as number,
-    profile: "offline-code",
     instanceClass: body.instance_class as SandboxInstanceClass,
   };
 }
@@ -1097,11 +1050,10 @@ export function createCailSandboxClient(
         )) {
           headers.set(name, value);
         }
-      } catch (error) {
+      } catch {
         throw new CailSandboxError(
           "invalid_correlation",
-          safeCorrelationErrorMessage(error) ??
-            "Invalid CAIL correlation object.",
+          "Invalid CAIL correlation object.",
           0,
         );
       }
@@ -1147,9 +1099,6 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       callOptions?: SandboxCallOptions,
     ) {
-      if (input.profile !== "offline-code") {
-        throw new Error('profile must be "offline-code"');
-      }
       const response = await call(
         "/sandbox/v1/sandbox",
         {
@@ -1161,7 +1110,6 @@ export function createCailSandboxClient(
               input.idempotencyKey,
               "idempotencyKey",
             ),
-            profile: input.profile,
           }),
         },
         credential,
@@ -1355,22 +1303,6 @@ export function createCailSandboxClient(
         execOptions,
       );
       return parseCommandEvents(requireStatus(response, 200));
-    },
-    async openapi(
-      credential: CailSandboxCredential,
-      callOptions?: SandboxCallOptions,
-    ) {
-      const response = await call(
-        "/sandbox/v1/openapi.json",
-        {},
-        credential,
-        callOptions,
-      );
-      const body = await parseSuccessRecord(
-        requireStatus(response, 200),
-        "Sandbox OpenAPI response was malformed.",
-      );
-      return body;
     },
   };
 }

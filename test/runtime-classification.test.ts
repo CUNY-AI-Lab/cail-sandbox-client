@@ -1,17 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { ParseError } from "eventsource-parser/stream";
 import {
-  CailSandboxError as DistCailSandboxError,
-  createCailSandboxClient as createDistClient,
-} from "../dist/index.js";
-import {
   CailSandboxError as SourceCailSandboxError,
   createCailSandboxClient as createSourceClient,
 } from "../src/index";
-import {
-  CailSandboxError as PackageCailSandboxError,
-  createCailSandboxClient as createPackageClient,
-} from "@cuny-ai-lab/cail-sandbox-client";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
 const requestId = "33333333-3333-4333-8333-333333333333";
@@ -39,16 +31,6 @@ const runtimes = [
     label: "source",
     create: createSourceClient,
     ErrorClass: SourceCailSandboxError,
-  },
-  {
-    label: "committed dist",
-    create: createDistClient,
-    ErrorClass: DistCailSandboxError,
-  },
-  {
-    label: "package export",
-    create: createPackageClient,
-    ErrorClass: PackageCailSandboxError,
   },
 ] as const;
 
@@ -242,12 +224,7 @@ async function executeToEvents(
     fetchImpl: async () => response,
   });
   const events = [];
-  for await (const event of await client.exec(
-    lease,
-    operation,
-    "true",
-    jwt,
-  )) {
+  for await (const event of await client.exec(lease, operation, "true", jwt)) {
     events.push(event);
   }
   return events;
@@ -314,9 +291,7 @@ test("guards and snapshots the SSE response body accessor exactly once", async (
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(
-          new TextEncoder().encode(
-            'event: exit\ndata: {"exit_code":0}\n\n',
-          ),
+          new TextEncoder().encode('event: exit\ndata: {"exit_code":0}\n\n'),
         );
         controller.close();
       },
@@ -342,9 +317,7 @@ test("rejects malformed SSE UTF-8, including split invalid sequences", async () 
   const prefix = encoder.encode(
     'event: error\ndata: {"code":"command_failed","message":"bad',
   );
-  const suffix = encoder.encode(
-    `","request_id":"${requestId}"}\n\n`,
-  );
+  const suffix = encoder.encode(`","request_id":"${requestId}"}\n\n`);
   const malformedCases = [
     [new Uint8Array([...prefix, 0xff, ...suffix])],
     [
@@ -367,9 +340,7 @@ test("rejects malformed SSE UTF-8, including split invalid sequences", async () 
         shouldRetry: false,
         cause: { name: "TypeError" },
       });
-      expect((error as Error).message).toBe(
-        "Command stream transport failed.",
-      );
+      expect((error as Error).message).toBe("Command stream transport failed.");
       expect((error as Error).message).not.toContain("bad");
     }
   }
@@ -445,9 +416,7 @@ test("guards every SSE setup stage and cleans the latest owned stream", async ()
           });
           expect((outcome as Error).message).not.toContain("sentinel");
           expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
-          expect(tracked.decodedCancelCalls()).toBe(
-            stage === "parser" ? 1 : 0,
-          );
+          expect(tracked.decodedCancelCalls()).toBe(stage === "parser" ? 1 : 0);
           expect(tracked.eventsCancelCalls()).toBe(stage === "reader" ? 1 : 0);
         }
       }
@@ -470,12 +439,7 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
   });
   try {
     for (const runtime of runtimes) {
-      for (const cleanup of [
-        "resolve",
-        "reject",
-        "never",
-        "throw",
-      ] as const) {
+      for (const cleanup of ["resolve", "reject", "never", "throw"] as const) {
         for (const release of ["resolve", "throw"] as const) {
           const primary = new Error("private reader failure sentinel");
           const tracked = trackedErroredStream(primary, cleanup, release);
@@ -492,10 +456,9 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
             ),
             Bun.sleep(50).then(() => "stalled"),
           ]);
-          expect(
-            outcome,
-            `${runtime.label}/${cleanup}/${release}`,
-          ).not.toBe("stalled");
+          expect(outcome, `${runtime.label}/${cleanup}/${release}`).not.toBe(
+            "stalled",
+          );
           expect(outcome).toBeInstanceOf(runtime.ErrorClass);
           expect(outcome).toMatchObject({
             code: "stream_transport_error",
@@ -543,7 +506,7 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
           fetchImpl: async () => jsonResponse(tracked.stream),
         });
         const outcome = await Promise.race([
-          client.openapi(jwt).catch((error) => error),
+          client.running(lease, jwt).catch((error) => error),
           Bun.sleep(50).then(() => "stalled"),
         ]);
         expect(outcome, `${runtime.label}/${cleanup}`).not.toBe("stalled");
@@ -776,7 +739,9 @@ test("keeps private stream transport causes exact and non-enumerable", async () 
       configurable: true,
     });
     expect(JSON.stringify(error)).not.toContain("private-stream-token");
-    expect(JSON.stringify(error)).not.toContain("private student response body");
+    expect(JSON.stringify(error)).not.toContain(
+      "private student response body",
+    );
     expect(tracked.cancelCalls()).toBe(1);
     expect(tracked.releaseCalls()).toBe(1);
   }
@@ -808,11 +773,11 @@ test("contains hostile correlation failures before fetch", async () => {
       app: "runtime-classification",
       fetchImpl: async () => {
         fetchCalls += 1;
-        return Response.json({ openapi: "3.1.1" });
+        return Response.json({ running: true });
       },
     });
     const error = await client
-      .openapi(jwt, {
+      .running(lease, jwt, {
         correlation: correlation as never,
       })
       .catch((caught) => caught);
@@ -821,9 +786,7 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(error.message).toBe(
-      "cail-log: correlation must be a readable plain object",
-    );
+    expect(error.message).toBe("Invalid CAIL correlation object.");
     expect(error.message).not.toContain("sentinel");
     expect(rejectedPrototypeReads).toBe(0);
     expect(fetchCalls).toBe(0);
@@ -840,7 +803,7 @@ test("contains hostile correlation failures before fetch", async () => {
       },
     );
     const forgedError = await client
-      .openapi(jwt, {
+      .running(lease, jwt, {
         correlation: forgedCorrelation as never,
       })
       .catch((caught) => caught);
@@ -849,39 +812,34 @@ test("contains hostile correlation failures before fetch", async () => {
       code: "invalid_correlation",
       status: 0,
     });
-    expect(forgedError.message).toBe(
-      "cail-log: correlation must be a readable plain object",
-    );
+    expect(forgedError.message).toBe("Invalid CAIL correlation object.");
     expect(forgedError.message).not.toContain("sentinel");
     expect(fetchCalls).toBe(0);
   }
 });
 
-test("retains only the vendored static correlation validation messages", async () => {
+test("uses one safe correlation validation message", async () => {
   const cases = [
-    [
-      null,
-      "cail-log: correlation must be a readable plain object",
-    ],
+    [null, "Invalid CAIL correlation object."],
     [
       { ...validCorrelation, trace_id: "bad" },
-      "cail-log: trace_id must be 32 lowercase hex chars, not all-zero",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, span_id: "bad" },
-      "cail-log: span_id must be 16 lowercase hex chars, not all-zero",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, request_id: "bad" },
-      "cail-log: request_id must be a lowercase UUID v4 or v7",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, trace_flags: 2 },
-      "cail-log: trace_flags must be 0 or 1",
+      "Invalid CAIL correlation object.",
     ],
     [
       { ...validCorrelation, tracestate: "bad value" },
-      "cail-log: tracestate must be a structurally valid W3C tracestate list",
+      "Invalid CAIL correlation object.",
     ],
   ] as const;
   for (const runtime of runtimes) {
@@ -889,10 +847,10 @@ test("retains only the vendored static correlation validation messages", async (
       const client = runtime.create({
         baseUrl: "https://sandbox.invalid",
         app: "runtime-classification",
-        fetchImpl: async () => Response.json({ openapi: "3.1.1" }),
+        fetchImpl: async () => Response.json({ running: true }),
       });
       const error = await client
-        .openapi(jwt, {
+        .running(lease, jwt, {
           correlation: correlation as never,
         })
         .catch((caught) => caught);

@@ -147,7 +147,7 @@ test("rejects and cancels a declared oversized JSON response", async () => {
     });
   });
 
-  const error = await parser.openapi(jwt).catch((error) => error);
+  const error = await parser.running(lease, jwt).catch((error) => error);
   expect(error).toMatchObject({
     code: "invalid_response",
     cause: { name: "ResponseBodyReadError" },
@@ -174,7 +174,7 @@ test("stops a chunked JSON response at the first excess byte", async () => {
   });
 
   const outcome = await Promise.race([
-    parser.openapi(jwt).then(
+    parser.running(lease, jwt).then(
       () => "resolved",
       (error) => error,
     ),
@@ -206,7 +206,7 @@ test("preserves the JSON boundary failure when cleanup rejects", async () => {
         headers: { "content-type": "application/json" },
       });
     })
-      .openapi(jwt)
+      .running(lease, jwt)
       .catch((error) => error);
     await Bun.sleep(0);
 
@@ -283,7 +283,7 @@ test("rejects malformed UTF-8 and cancels the still-open response", async () => 
         headers: { "content-type": "application/json" },
       });
     })
-      .openapi(jwt)
+      .running(lease, jwt)
       .catch((error) => error),
     Bun.sleep(50).then(() => "stalled"),
   ]);
@@ -321,7 +321,7 @@ test("preserves malformed UTF-8 as the primary when cancellation rejects", async
         headers: { "content-type": "application/json" },
       });
     })
-      .openapi(jwt)
+      .running(lease, jwt)
       .catch((error) => error);
     await Bun.sleep(0);
 
@@ -372,7 +372,7 @@ test("contains a throwing cleanup diagnostic sink", async () => {
         headers: { "content-type": "application/json" },
       });
     })
-      .openapi(jwt)
+      .running(lease, jwt)
       .catch((error) => error);
     await Bun.sleep(10);
 
@@ -395,10 +395,13 @@ test("contains a throwing cleanup diagnostic sink", async () => {
 });
 
 test("accepts an exact-limit JSON response", async () => {
-  const empty = JSON.stringify({ padding: "" });
-  const body = JSON.stringify({
-    padding: "x".repeat(maxJsonBytes - empty.length),
+  const wire = JSON.stringify({
+    running: true,
+    state: "active",
+    expires_at: "2026-07-12T12:00:00.000Z",
+    lease_generation: 1,
   });
+  const body = `${" ".repeat(maxJsonBytes - wire.length)}${wire}`;
   expect(new TextEncoder().encode(body).byteLength).toBe(maxJsonBytes);
 
   const result = await client(async () => {
@@ -408,8 +411,8 @@ test("accepts an exact-limit JSON response", async () => {
         "content-length": String(maxJsonBytes),
       },
     });
-  }).openapi(jwt);
-  expect(result.padding).toHaveLength(maxJsonBytes - empty.length);
+  }).running(lease, jwt);
+  expect(result.running).toBeTrue();
 });
 
 test("bounds JSON error envelopes and preserves only safe metadata", async () => {
