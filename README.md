@@ -4,11 +4,8 @@ A backend-only Fetch client for the CAIL Sandbox service. It wraps the reviewed
 `/sandbox/v1` lifecycle, session, file, command-stream, and usage surface
 without exposing Cloudflare SDK types.
 
-The canonical service contract is
-`cail-sandbox-service` commit
-`2fac839481aa38710ac45596c3e56227a85c02b7`. This repository vendors its
-OpenAPI document byte-for-byte at `contract/sandbox-openapi.json`, SHA-256
-`07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26`.
+The service repository owns the live wire contract; this package keeps only
+the typed request and response behavior it consumes.
 
 ## Boundary
 
@@ -17,7 +14,7 @@ Create the client only in a protected application backend. Every request uses:
 - a verified CAIL identity JWT in `X-CAIL-Identity-JWT`, with scalar audience
   `cail:sandbox-service`;
 - the configured application slug in `X-CAIL-App`; and
-- lease/session operation capabilities where the OpenAPI requires them.
+- lease/session operation capabilities where the service requires them.
 
 Sandbox IDs are locators, not credentials. Capabilities and JWTs must not enter
 browser state, workspace files, commands, logs, or analytics. The client
@@ -107,9 +104,8 @@ bun run check
 bun pm pack --dry-run
 ```
 
-`bun run check:service-contract` compares the vendored artifact byte-for-byte
-with a sibling service checkout when present, or verifies the pinned digest
-standalone. Set `CAIL_SANDBOX_SERVICE_OPENAPI` to check another explicit file.
+The service repository is the authority for the wire contract. This package
+does not vendor or export a duplicate OpenAPI artifact.
 
 The package depends on the exact published CAIL Log `0.6.0` version and lockfile
 artifact. The reviewed Log tarball is 50,269 bytes with SHA-256

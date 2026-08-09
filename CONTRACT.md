@@ -1,7 +1,6 @@
 # CAIL Sandbox client contract
 
-Status: reviewed against `cail-sandbox-service`
-`2fac839481aa38710ac45596c3e56227a85c02b7`.
+Status: reviewed against `cail-sandbox-service`.
 
 ## Owned boundary
 
@@ -14,7 +13,7 @@ state.
 The client sends one `X-CAIL-Identity-JWT` plus configured `X-CAIL-App`.
 Authenticated identity comes only from the service's exact-audience verifier.
 Lease, session, operation, and file calls add only the capabilities required by
-the OpenAPI. The client never derives a principal or accepts one in request
+the service. The client never derives a principal or accepts one in request
 JSON.
 
 Request correlation follows the accepted `cail-log` source contract. The public
@@ -93,12 +92,6 @@ post-terminal, oversized, and unterminated streams are rejected. A transport
 failure or abort can leave the remote outcome ambiguous.
 
 ## Provenance and release
-
-The packaged OpenAPI is byte-identical to the accepted service artifact and
-has SHA-256
-`07f5ba6973b84dec313c22dcfd6877ce58ba909ab96af2ccc3e5e3ea82bd0c26`.
-Package-local checks pin the digest and compare a sibling service checkout when
-available.
 
 No migration or persistent-state change is owned here. Sandbox Client and CAIL
 Log releases are immutable package artifacts. The source checkout's release

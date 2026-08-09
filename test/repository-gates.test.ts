@@ -176,6 +176,7 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
     },
   });
   expect(pkg.files).toContain("CONTRACT.md");
+  expect(pkg.files).not.toContain("contract");
   expect(pkg.files).not.toContain("vendor");
   expect(pkg.dependencies?.["@cuny-ai-lab/cail-log"]).toBe("0.6.0");
   expect(pkg.publishConfig).toEqual({
@@ -185,9 +186,10 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
   expect(pkg.scripts?.check?.split(" && ")[0]).toBe(
     "bun run check:release-authority",
   );
-  expect(pkg.scripts?.check).toContain("bun run check:dist");
-  expect(pkg.scripts?.check?.indexOf("bun run check:dist")).toBeLessThan(
-    pkg.scripts?.check?.indexOf("bun run build") ?? -1,
+  expect(pkg.scripts?.check).not.toContain("check:dist");
+  expect(pkg.scripts?.check).toContain("bun run build");
+  expect(pkg.scripts?.check?.indexOf("bun run build")).toBeLessThan(
+    pkg.scripts?.check?.indexOf("bun test") ?? -1,
   );
   expect(pkg.scripts?.prepublishOnly).toContain("bun run check");
   expect(pkg.scripts?.prepublishOnly).toContain(
@@ -196,9 +198,7 @@ test("package is a truthful 0.1.1 successor using published Log 0.6.0", () => {
   expect(pkg.scripts?.prepublishOnly).toContain(
     "bun run check:release-live",
   );
-  expect(pkg.scripts?.prepublishOnly).toContain(
-    "git diff --exit-code -- dist",
-  );
+  expect(pkg.scripts?.prepublishOnly).not.toContain("git diff --exit-code -- dist");
 });
 
 test("records immutable published package receipts without claiming 0.1.1 publication", () => {

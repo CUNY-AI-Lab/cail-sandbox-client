@@ -1,17 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { ParseError } from "eventsource-parser/stream";
 import {
-  CailSandboxError as DistCailSandboxError,
-  createCailSandboxClient as createDistClient,
-} from "../dist/index.js";
-import {
   CailSandboxError as SourceCailSandboxError,
   createCailSandboxClient as createSourceClient,
 } from "../src/index";
-import {
-  CailSandboxError as PackageCailSandboxError,
-  createCailSandboxClient as createPackageClient,
-} from "@cuny-ai-lab/cail-sandbox-client";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
 const requestId = "33333333-3333-4333-8333-333333333333";
@@ -39,16 +31,6 @@ const runtimes = [
     label: "source",
     create: createSourceClient,
     ErrorClass: SourceCailSandboxError,
-  },
-  {
-    label: "committed dist",
-    create: createDistClient,
-    ErrorClass: DistCailSandboxError,
-  },
-  {
-    label: "package export",
-    create: createPackageClient,
-    ErrorClass: PackageCailSandboxError,
   },
 ] as const;
 

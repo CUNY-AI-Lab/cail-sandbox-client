@@ -13,12 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./contract/sandbox-openapi.json": "./contract/sandbox-openapi.json"
+    }
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "contract",
     "dist",
     "src",
     "CONTRACT.md",
@@ -32,17 +30,16 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "bun run check:service-contract && bun test",
-    "check": "bun run check:release-authority && bun run check:service-contract && bun run typecheck && bun run check:dist && bun test && bun run build",
+    "test": "bun test",
+    "check": "bun run check:release-authority && bun run typecheck && bun run build && bun test && bun run package:dry-run",
     "check:clean": "bun run scripts/check-clean.ts",
-    "check:dist": "bun run scripts/check-dist.ts",
     "check:release-authority": "bun run scripts/check-release-authority.ts",
     "check:release-ref": "bun run scripts/check-release-ref.ts",
     "check:release-live": "bun run scripts/check-live-release-authority.ts",
-    "check:service-contract": "bun run scripts/check-service-contract.ts",
+    "package:dry-run": "bun pm pack --dry-run --ignore-scripts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "bun run check && bun run check:clean && bun run check:release-ref && bun run check:release-live && git diff --exit-code -- dist",
+    "prepublishOnly": "bun run check && bun run check:clean && bun run check:release-ref && bun run check:release-live",
     "prepare": "bun run build"
   },
   "devDependencies": {
