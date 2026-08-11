@@ -2,7 +2,7 @@
 
 - Owns the backend-only Fetch client for the typed `/sandbox/v1` lifecycle, session, file, command-stream, usage, and settlement calls.
 - The service owns the OpenAPI wire definition; this package owns request construction, local validation, CAIL identity/capability headers, correlation, strict response parsing, and SSE framing.
-- This v0.1.1 candidate targets the isolated Computer-backed sandbox constellation. Existing production integrations remain separate and are not migrated here.
+- This is the backend-only Fetch boundary for the current Computer-backed Sandbox service; callers own application identity and reconciliation.
 - Require a verified identity JWT supplied by the caller; treat lease, session, and operation capabilities as opaque service-issued values.
 - Use HTTPS origins, exact loopback-only HTTP for local work, disabled redirects, and one request attempt with no automatic retry.
 - Cancellation or a transport failure can leave the remote operation ambiguous; callers decide cleanup and reconciliation.

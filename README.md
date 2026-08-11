@@ -5,9 +5,10 @@ file, command-stream, usage, and settlement surface. The service repository
 owns the OpenAPI definition; this package owns the request and response
 behavior it consumes.
 
-This v0.1.1 candidate targets the isolated Computer-backed sandbox
-constellation. Existing production integrations remain separate; this package
-does not migrate or replace them.
+The client is the backend-only Fetch boundary for the current
+Computer-backed Sandbox service. Protected application backends, including
+Workbench, use it for the service contract; the client does not own runtime,
+identity, lease, or quota policy.
 
 ## Boundary
 
