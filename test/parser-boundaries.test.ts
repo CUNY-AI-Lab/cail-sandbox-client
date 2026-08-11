@@ -128,6 +128,71 @@ test("rejects noncanonical RFC 4648 output encodings", async () => {
   }
 });
 
+test("rejects unsafe integer generations and command exit codes", async () => {
+  const unsafe = Number.MAX_SAFE_INTEGER + 1;
+  const lifecycle = client(async () =>
+    Response.json(
+      {
+        id: lease.id,
+        state: "active",
+        expires_at: operation.expiresAt,
+        lease_capability: lease.leaseCapability,
+        lease_generation: unsafe,
+        instance_class: "lite",
+      },
+      { status: 201 },
+    ),
+  );
+  await expect(
+    lifecycle.create(
+      {
+        scopeKey: "scope-key-000000000000000000000000000001",
+        idempotencyKey: "create-key-0000000000000000000000000001",
+      },
+      jwt,
+    ),
+  ).rejects.toMatchObject({ code: "invalid_response" });
+
+  const session = client(async () =>
+    Response.json(
+      {
+        id: operation.id,
+        operation_capability: operation.operationCapability,
+        operation_generation: unsafe,
+        expires_at: operation.expiresAt,
+      },
+      { status: 201 },
+    ),
+  );
+  await expect(
+    session.createSession(
+      lease,
+      {
+        operationId: operation.operationId,
+        idempotencyKey: "operation-key-00000000000000000000000001",
+      },
+      jwt,
+    ),
+  ).rejects.toMatchObject({ code: "invalid_response" });
+
+  const running = client(async () =>
+    Response.json({
+      running: true,
+      state: "active",
+      expires_at: operation.expiresAt,
+      lease_generation: unsafe,
+    }),
+  );
+  await expect(running.running(lease, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+  });
+
+  const exitError = await execError(
+    `event: exit\ndata: ${JSON.stringify({ exit_code: unsafe })}\n\n`,
+  );
+  expect(exitError).toMatchObject({ code: "invalid_stream" });
+});
+
 test("rejects and cancels a declared oversized JSON response", async () => {
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({

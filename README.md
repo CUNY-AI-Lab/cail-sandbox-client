@@ -69,7 +69,8 @@ await client.destroy(lease, identity);
 const settled = await client.settlement(lease.id, identity);
 ```
 
-`usage()` returns the current UTC-day snapshot in exact integer
+Lifecycle generations, command exit codes, and `usage()` quantities are parsed
+as safe integers. `usage()` returns the current UTC-day snapshot in exact integer
 `mib_milliseconds`. `settlement(leaseId)` returns the immutable terminal usage
 for an owned lease. The client rejects malformed dates, unsafe integer
 quantities, inconsistent aggregate remaining usage, mismatched lease IDs, and
