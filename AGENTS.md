@@ -11,3 +11,7 @@
 - Keep command output fail-closed to the documented WHATWG SSE events and preserve strict success/error envelopes.
 
 Check with `bun run check`.
+
+CI runs `bun run check` on pull requests and `main`; stable release tags run
+the checked publish workflow with package write access. This client has no
+Worker/Computer deploy path and no Cloudflare token.
