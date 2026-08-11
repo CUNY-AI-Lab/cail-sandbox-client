@@ -752,7 +752,7 @@ async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
     !isDateTime(body.expires_at) ||
     typeof body.lease_capability !== "string" ||
     !CONTROL_VALUE.test(body.lease_capability) ||
-    !Number.isInteger(body.lease_generation) ||
+    !Number.isSafeInteger(body.lease_generation) ||
     (body.lease_generation as number) < 1 ||
     !["lite", "basic", "standard-1"].includes(String(body.instance_class))
   ) {
@@ -785,7 +785,7 @@ async function parseOperation(
     !UUID.test(body.id) ||
     typeof body.operation_capability !== "string" ||
     !CONTROL_VALUE.test(body.operation_capability) ||
-    !Number.isInteger(body.operation_generation) ||
+    !Number.isSafeInteger(body.operation_generation) ||
     (body.operation_generation as number) < 1 ||
     !isDateTime(body.expires_at)
   ) {
@@ -813,7 +813,7 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
     typeof body.running !== "boolean" ||
     body.state !== "active" ||
     !isDateTime(body.expires_at) ||
-    !Number.isInteger(body.lease_generation) ||
+    !Number.isSafeInteger(body.lease_generation) ||
     (body.lease_generation as number) < 1
   ) {
     throw responseError(response, "invalid_response", message);
@@ -1474,7 +1474,7 @@ async function* parseCommandEvents(
         }
         if (
           !hasOnlyKeys(data, ["exit_code"]) ||
-          !Number.isInteger(data.exit_code)
+          !Number.isSafeInteger(data.exit_code)
         ) {
           throw invalidStream("Command exit event was malformed.");
         }
