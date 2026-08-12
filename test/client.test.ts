@@ -4,6 +4,7 @@ import {
   correlationFromHeaders,
   createCailSandboxClient,
   type CailCorrelation,
+  type FetchLike,
 } from "../src/index";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
@@ -108,6 +109,43 @@ test("rejects redirects without following or leaking credentials", async () => {
     code: "unexpected_redirect",
     status: 302,
   });
+});
+
+test("rejects malformed runtime inputs before transport", async () => {
+  expect(() =>
+    createCailSandboxClient({
+      baseUrl: "https://x",
+      app: 42 as unknown as string,
+      fetchImpl: async () => Response.json({}),
+    }),
+  ).toThrow("app must be a stable lowercase slug");
+  expect(() =>
+    createCailSandboxClient({
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: 42 as unknown as FetchLike,
+    }),
+  ).toThrow("fetchImpl must be a function");
+
+  let fetchCalls = 0;
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return Response.json(runningWire);
+    },
+  });
+  await expect(
+    client.exec(lease, operation, 1 as unknown as string, jwt),
+  ).rejects.toThrow("command must contain");
+  await expect(
+    client.readFile(lease, operation, null as unknown as string, jwt),
+  ).rejects.toThrow("file path must be workspace-relative");
+  await expect(client.running(lease, null as unknown as typeof jwt)).rejects.toThrow(
+    "credential must contain a valid identity JWT",
+  );
+  expect(fetchCalls).toBe(0);
 });
 
 test("forwards cail-log correlation on typed sandbox operations", async () => {
@@ -1299,6 +1337,8 @@ test("rejects baseUrl userinfo, query strings, and fragments", () => {
     "https://user:pass@x/api",
     "https://x/api?tenant=1",
     "https://x/api#sandbox",
+    "https://x/api?",
+    "https://x/api#",
   ]) {
     expect(() =>
       createCailSandboxClient({
