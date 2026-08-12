@@ -186,6 +186,7 @@ export interface CailSandboxClient {
 }
 
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/;
 const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -218,7 +219,12 @@ function isCailRequestId(value: unknown): value is string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    return !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 function isCailDetails(
@@ -244,17 +250,34 @@ function hasOnlyKeys(
 }
 
 function credentialHeaders(credential: CailSandboxCredential) {
-  const candidate = credential as { kind?: unknown; token?: unknown };
-  if (
-    candidate.kind !== "jwt" ||
-    typeof candidate.token !== "string" ||
-    candidate.token.length === 0 ||
-    candidate.token.length > 8_192 ||
-    !/^[\x21-\x7e]+$/.test(candidate.token)
-  ) {
+  const candidate = isRecord(credential)
+    ? credential
+    : ({} as Record<string, unknown>);
+  let kind: unknown;
+  let token: unknown;
+  try {
+    const kindDescriptor = Object.getOwnPropertyDescriptor(candidate, "kind");
+    const tokenDescriptor = Object.getOwnPropertyDescriptor(candidate, "token");
+    kind =
+      kindDescriptor !== undefined && "value" in kindDescriptor
+        ? kindDescriptor.value
+        : undefined;
+    token =
+      tokenDescriptor !== undefined && "value" in tokenDescriptor
+        ? tokenDescriptor.value
+        : undefined;
+  } catch {
     throw new Error("credential must contain a valid identity JWT");
   }
-  return { "x-cail-identity-jwt": candidate.token };
+  const validToken =
+    typeof token === "string" &&
+    token.length > 0 &&
+    token.length <= 8_192 &&
+    /^[\x21-\x7e]+$/.test(token);
+  if (kind !== "jwt" || !validToken) {
+    throw new Error("credential must contain a valid identity JWT");
+  }
+  return { "x-cail-identity-jwt": token as string };
 }
 
 type ResponseCleanupOperation =
@@ -496,7 +519,7 @@ function responseError(
 }
 
 function controlValue(value: string, name: string) {
-  if (!CONTROL_VALUE.test(value)) {
+  if (typeof value !== "string" || !CONTROL_VALUE.test(value)) {
     throw new Error(`${name} must be a high-entropy opaque value`);
   }
   return value;
@@ -531,6 +554,26 @@ function isReadableStreamBody(
   if (typeof body !== "object" || body === null) return false;
   try {
     return typeof (body as { getReader?: unknown }).getReader === "function";
+  } catch {
+    return false;
+  }
+}
+
+function isAbortSignal(value: unknown): value is AbortSignal {
+  if (value === null || typeof value !== "object") return false;
+  try {
+    const candidate = value as {
+      aborted?: unknown;
+      addEventListener?: unknown;
+      removeEventListener?: unknown;
+      dispatchEvent?: unknown;
+    };
+    return (
+      typeof candidate.aborted === "boolean" &&
+      typeof candidate.addEventListener === "function" &&
+      typeof candidate.removeEventListener === "function" &&
+      typeof candidate.dispatchEvent === "function"
+    );
   } catch {
     return false;
   }
@@ -580,6 +623,7 @@ async function readBoundedJson(
     cancelResponseBody(response, signal.reason);
     throw signal.reason;
   }
+  const body = response.body;
   const declaredLength = response.headers.get("content-length");
   if (
     declaredLength !== null &&
@@ -589,14 +633,23 @@ async function readBoundedJson(
     const error = new ResponseBodyReadError(
       "Sandbox JSON response exceeded the byte ceiling.",
     );
-    cancelResponseBody(response, error);
+    if (body) cancelResponseStream(body, error);
     throw error;
   }
-  if (!response.body) {
+  if (!body) {
     throw new ResponseBodyReadError("Sandbox JSON response had no body.");
   }
 
-  const reader = response.body.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = body.getReader();
+  } catch (cause) {
+    cancelResponseStream(body, cause);
+    throw new ResponseBodyReadError(
+      "Sandbox JSON response could not be read.",
+      { cause },
+    );
+  }
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let total = 0;
   let text = "";
@@ -989,6 +1042,21 @@ async function parseError(response: Response): Promise<CailSandboxError> {
 export function createCailSandboxClient(
   options: SandboxClientOptions,
 ): CailSandboxClient {
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Array.isArray(options)
+  ) {
+    throw new Error("options must be an object");
+  }
+  if (
+    typeof options.baseUrl !== "string" ||
+    options.baseUrl.length === 0 ||
+    options.baseUrl.trim() !== options.baseUrl ||
+    CONTROL_CHARACTERS.test(options.baseUrl)
+  ) {
+    throw new Error("baseUrl must be a non-empty URL string");
+  }
   let parsedBaseUrl: URL;
   try {
     parsedBaseUrl = new URL(options.baseUrl);
@@ -1007,13 +1075,15 @@ export function createCailSandboxClient(
     parsedBaseUrl.username ||
     parsedBaseUrl.password ||
     parsedBaseUrl.search ||
-    parsedBaseUrl.hash
+    parsedBaseUrl.hash ||
+    options.baseUrl.includes("?") ||
+    options.baseUrl.includes("#")
   ) {
     throw new Error(
       "baseUrl must not contain credentials, a query, or a fragment",
     );
   }
-  if (!APP.test(options.app)) {
+  if (typeof options.app !== "string" || !APP.test(options.app)) {
     throw new Error("app must be a stable lowercase slug");
   }
   if (
@@ -1027,7 +1097,10 @@ export function createCailSandboxClient(
     );
   }
 
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function");
+  }
   const basePath = parsedBaseUrl.pathname.replace(/\/+$/, "");
   const baseUrl = `${parsedBaseUrl.origin}${basePath === "/" ? "" : basePath}`;
   const call = async (
@@ -1039,6 +1112,8 @@ export function createCailSandboxClient(
     const headers = new Headers(init.headers);
     headers.delete("x-cail-identity-jwt");
     headers.delete("authorization");
+    headers.delete("proxy-authorization");
+    headers.delete("cookie");
     headers.set("x-cail-app", options.app);
     for (const [name, value] of Object.entries(credentialHeaders(credential))) {
       headers.set(name, value);
@@ -1059,7 +1134,23 @@ export function createCailSandboxClient(
       }
     }
 
-    const callerSignal = callOptions?.signal ?? init.signal;
+    const optionSignal = callOptions?.signal;
+    if (optionSignal !== undefined && !isAbortSignal(optionSignal)) {
+      throw new CailSandboxError(
+        "invalid_request",
+        "`signal` must be an AbortSignal when present.",
+        0,
+      );
+    }
+    const initSignal = init.signal;
+    if (initSignal !== undefined && !isAbortSignal(initSignal)) {
+      throw new CailSandboxError(
+        "invalid_request",
+        "`signal` must be an AbortSignal when present.",
+        0,
+      );
+    }
+    const callerSignal = optionSignal ?? initSignal;
     const timeoutSignal =
       options.defaultTimeoutMs === undefined
         ? undefined
@@ -1279,7 +1370,11 @@ export function createCailSandboxClient(
       credential: CailSandboxCredential,
       execOptions: SandboxExecOptions = {},
     ) {
-      if (!command || command.length > MAX_COMMAND_CHARS) {
+      if (
+        typeof command !== "string" ||
+        command.length === 0 ||
+        command.length > MAX_COMMAND_CHARS
+      ) {
         throw new Error(
           `command must contain 1-${MAX_COMMAND_CHARS} characters`,
         );
@@ -1324,7 +1419,7 @@ function isParseError(error: unknown): boolean {
 // The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
 function encodeId(id: string) {
-  if (!UUID.test(id)) {
+  if (typeof id !== "string" || !UUID.test(id)) {
     throw new Error("id must be a sandbox-issued identifier");
   }
   return encodeURIComponent(id);
@@ -1332,6 +1427,7 @@ function encodeId(id: string) {
 
 function encodePath(path: string) {
   if (
+    typeof path !== "string" ||
     path.length === 0 ||
     path.startsWith("/") ||
     path.includes("\0") ||

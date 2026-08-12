@@ -480,6 +480,43 @@ test("accepts an exact-limit JSON response", async () => {
   expect(result.running).toBeTrue();
 });
 
+test("snapshots a JSON body once and cancels failed reader acquisition", async () => {
+  let bodyReads = 0;
+  let cancelCalls = 0;
+  const primary = new Error("private reader acquisition failure");
+  const body = {
+    getReader() {
+      throw primary;
+    },
+    cancel() {
+      cancelCalls += 1;
+    },
+  } as unknown as ReadableStream<Uint8Array>;
+  const response = new Response(null, {
+    headers: { "content-type": "application/json" },
+  });
+  Object.defineProperty(response, "body", {
+    configurable: true,
+    get() {
+      bodyReads += 1;
+      return body;
+    },
+  });
+
+  const error = await client(async () => response)
+    .running(lease, jwt)
+    .catch((caught) => caught);
+  expect(error).toMatchObject({
+    code: "invalid_response",
+    cause: {
+      name: "ResponseBodyReadError",
+      cause: primary,
+    },
+  });
+  expect(bodyReads).toBe(1);
+  expect(cancelCalls).toBe(1);
+});
+
 test("bounds JSON error envelopes and preserves only safe metadata", async () => {
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({
