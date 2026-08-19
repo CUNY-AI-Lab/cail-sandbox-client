@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { createCailSandboxClient, type FetchLike } from "../src/index";
+import {
+  createCailSandboxClient,
+  type FetchLike,
+  type SandboxClientOptions,
+} from "../src/index";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
 const lease = {
@@ -29,16 +33,17 @@ const sseHeaders = {
 };
 
 function client(fetchImpl: FetchLike, defaultTimeoutMs?: number) {
-  return createCailSandboxClient({
+  const options: SandboxClientOptions = {
     baseUrl: "https://sandbox.invalid",
     app: "f07-f17",
     fetchImpl,
-    ...(defaultTimeoutMs === undefined ? {} : { defaultTimeoutMs }),
-  });
+  };
+  if (defaultTimeoutMs !== undefined) options.defaultTimeoutMs = defaultTimeoutMs;
+  return createCailSandboxClient(options);
 }
 
 function stalledBody<T>() {
-  let rejectRead!: (error: unknown) => void;
+  let rejectRead!: (cause: unknown) => void;
   let cancelCalls = 0;
   let releaseCalls = 0;
   let cancelReason: unknown;
@@ -47,18 +52,20 @@ function stalledBody<T>() {
   });
   const reader = {
     read: () => reading,
-    cancel: (reason?: unknown) => {
+    cancel: (cause?: unknown) => {
       cancelCalls += 1;
-      cancelReason = reason;
+      cancelReason = cause;
       return new Promise<void>(() => undefined);
     },
     releaseLock: () => {
       releaseCalls += 1;
     },
   };
-  const body = {
+  // SAFETY: This fixture intentionally implements only the reader operations
+  // exercised by cancellation and late-rejection tests.
+  const body: ReadableStream<Uint8Array> = {
     getReader: () => reader,
-  } as unknown as ReadableStream<Uint8Array>;
+  } as never;
   return {
     body,
     rejectRead,
@@ -107,12 +114,7 @@ function captureNativePipeline(
   stream: ReadableStream<unknown>,
   pipeline: ReadableStream<unknown>[],
 ) {
-  const nativePipeThrough = (
-    stream.pipeThrough as unknown as (
-      transform: TransformStream<unknown, unknown>,
-      options?: StreamPipeOptions,
-    ) => ReadableStream<unknown>
-  ).bind(stream);
+  const nativePipeThrough = stream.pipeThrough.bind(stream);
   Object.defineProperty(stream, "pipeThrough", {
     configurable: true,
     value(
@@ -130,7 +132,7 @@ function captureNativePipeline(
 function nativeSseFixture(behavior: NativeSseBehavior) {
   let cancelCalls = 0;
   let cancelReason: unknown;
-  let rejectRead!: (error: unknown) => void;
+  let rejectRead!: (cause: unknown) => void;
   let pullStartedResolve!: () => void;
   let cancelAttemptedResolve!: () => void;
   let pendingRead: Promise<void> | undefined;
@@ -163,13 +165,13 @@ function nativeSseFixture(behavior: NativeSseBehavior) {
     },
   });
   const pipeline: ReadableStream<unknown>[] = [];
-  captureNativePipeline(body as unknown as ReadableStream<unknown>, pipeline);
+  captureNativePipeline(body, pipeline);
   return {
     body,
     pipeline,
     pullStarted,
     cancelAttempted,
-    rejectRead: (error: unknown) => rejectRead(error),
+    rejectRead: (cause: unknown) => rejectRead(cause),
     cancelCalls: () => cancelCalls,
     cancelReason: () => cancelReason,
   };
@@ -195,7 +197,7 @@ test("custom stalled JSON reader observes a late provider rejection", async () =
   const stalled = stalledBody<ReadableStreamReadResult<Uint8Array>>();
   const response = responseWithBody(stalled.body, jsonHeaders);
   const unhandled: unknown[] = [];
-  const onUnhandled = (error: unknown) => unhandled.push(error);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   try {
     const pending = client(async () => response).running(lease, jwt, {
@@ -267,7 +269,7 @@ test("native SSE abort stays prompt when body cancellation stalls", async () => 
   const fixture = nativeSseFixture("cancel-stall");
   const response = new Response(fixture.body, { headers: sseHeaders });
   const unhandled: unknown[] = [];
-  const onUnhandled = (error: unknown) => unhandled.push(error);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   try {
     const events = await client(async () => response).exec(
@@ -313,7 +315,7 @@ test("native SSE abort observes a late body read rejection", async () => {
   const fixture = nativeSseFixture("late-read-rejection");
   const response = new Response(fixture.body, { headers: sseHeaders });
   const unhandled: unknown[] = [];
-  const onUnhandled = (error: unknown) => unhandled.push(error);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   try {
     const events = await client(async () => response).exec(

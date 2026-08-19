@@ -7,6 +7,7 @@ import {
   EventSourceParserStream,
   type EventSourceMessage,
 } from "eventsource-parser/stream";
+import { z } from "zod";
 
 export {
   CAIL_REQUEST_ID_HEADER,
@@ -54,9 +55,11 @@ export type CommandTerminalEvent =
   | { type: "exit"; exitCode: number }
   | { type: "error"; code: string; message: string; requestId: string };
 
+const responseSignals = new WeakMap<Response, AbortSignal | undefined>();
 const liveResponseBodyReadErrors = new WeakSet<object>();
 const liveEventSourceParseErrors = new WeakSet<object>();
-const responseSignals = new WeakMap<Response, AbortSignal | undefined>();
+
+type CailErrorDetails = Record<string, string | number | boolean | null>;
 
 export class CailSandboxError extends Error {
   declare readonly cause?: unknown | undefined;
@@ -67,7 +70,7 @@ export class CailSandboxError extends Error {
     readonly status: number,
     readonly type = "unknown_error",
     readonly param: string | null = null,
-    readonly details: Record<string, unknown> = {},
+    readonly details: CailErrorDetails = {},
     readonly requestId: string | null = null,
     readonly shouldRetry: boolean | null = null,
     cause?: unknown | undefined,
@@ -186,7 +189,6 @@ export interface CailSandboxClient {
 }
 
 const APP = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/;
 const CONTROL_VALUE = /^[A-Za-z0-9._~-]{32,256}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -212,76 +214,78 @@ const ERROR_TYPES = new Set([
 // WHATWG URL keeps IPv6 hostnames bracketed; accept the bare form defensively.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
-/** Resource IDs use the broader UUID shape above; request IDs use cail-log's
- * canonical lowercase UUIDv4/v7 validator. */
-function isCailRequestId(value: unknown): value is string {
-  return typeof value === "string" && REQUEST_ID_RE.test(value);
-}
+const JSON_VALUE_SCHEMA = z.json();
+type JsonValue = z.infer<typeof JSON_VALUE_SCHEMA>;
+const JSON_OBJECT_SCHEMA = z.record(z.string(), JSON_VALUE_SCHEMA);
+type JsonObject = z.infer<typeof JSON_OBJECT_SCHEMA>;
+const CAIL_DETAILS_SCHEMA = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean(), z.null()]),
+);
+const CREDENTIAL_SCHEMA = z
+  .object({
+    kind: z.literal("jwt"),
+    token: z.string().min(1).max(8_192).regex(/^[\u0021-\u007e]+$/u),
+  })
+  .strict();
+const READABLE_STREAM_BODY_SCHEMA = z
+  .object({ getReader: z.function() })
+  .passthrough();
+const ABORT_SIGNAL_SCHEMA = z
+  .object({
+    aborted: z.boolean(),
+    addEventListener: z.function(),
+    removeEventListener: z.function(),
+    dispatchEvent: z.function(),
+  })
+  .passthrough();
+const OBJECT_INPUT_SCHEMA = z.object({}).passthrough();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) return false;
+function isObjectInput(input: SandboxClientOptions): boolean {
   try {
-    return !Array.isArray(value);
+    return OBJECT_INPUT_SCHEMA.safeParse(input).success;
   } catch {
     return false;
   }
 }
 
-function isCailDetails(
-  value: unknown,
-): value is Record<string, string | number | boolean | null> {
-  return (
-    isRecord(value) &&
-    Object.values(value).every(
-      (entry) =>
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "number" ||
-        typeof entry === "boolean",
-    )
-  );
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowed: readonly string[],
-) {
-  return Object.keys(value).every((key) => allowed.includes(key));
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
 }
 
 function credentialHeaders(credential: CailSandboxCredential) {
-  const candidate = isRecord(credential)
-    ? credential
-    : ({} as Record<string, unknown>);
-  let kind: unknown;
-  let token: unknown;
   try {
-    const kindDescriptor = Object.getOwnPropertyDescriptor(candidate, "kind");
-    const tokenDescriptor = Object.getOwnPropertyDescriptor(candidate, "token");
-    kind =
-      kindDescriptor !== undefined && "value" in kindDescriptor
-        ? kindDescriptor.value
-        : undefined;
-    token =
-      tokenDescriptor !== undefined && "value" in tokenDescriptor
-        ? tokenDescriptor.value
-        : undefined;
+    const kindDescriptor = Object.getOwnPropertyDescriptor(credential, "kind");
+    const tokenDescriptor = Object.getOwnPropertyDescriptor(credential, "token");
+    const parsed = CREDENTIAL_SCHEMA.safeParse({
+      kind:
+        kindDescriptor !== undefined && "value" in kindDescriptor
+          ? kindDescriptor.value
+          : undefined,
+      token:
+        tokenDescriptor !== undefined && "value" in tokenDescriptor
+          ? tokenDescriptor.value
+          : undefined,
+    });
+    if (parsed.success) {
+      return { "x-cail-identity-jwt": parsed.data.token };
+    }
   } catch {
-    throw new Error("credential must contain a valid identity JWT");
+    // Hostile runtime values can throw during property access. The public
+    // credential error below deliberately contains none of that private data.
   }
-  const validToken =
-    typeof token === "string" &&
-    token.length > 0 &&
-    token.length <= 8_192 &&
-    /^[\x21-\x7e]+$/.test(token);
-  if (kind !== "jwt" || !validToken) {
-    throw new Error("credential must contain a valid identity JWT");
-  }
-  return { "x-cail-identity-jwt": token as string };
+  throw new Error("credential must contain a valid identity JWT");
 }
 
 type ResponseCleanupOperation =
   "body_cancel" | "reader_cancel" | "reader_release";
+
+interface CancelableStream {
+  cancel(cause?: unknown): Promise<void>;
+}
 
 function logResponseCleanupDiagnostic(
   operation: ResponseCleanupOperation,
@@ -298,21 +302,21 @@ function logResponseCleanupDiagnostic(
   }
 }
 
-function cancelResponseBody(response: Response, reason?: unknown): void {
+function cancelResponseBody(response: Response, cause?: unknown): void {
   try {
     const body = response.body;
-    if (body) cancelResponseStream(body, reason);
+    if (body) cancelResponseStream(body, cause);
   } catch {
     logResponseCleanupDiagnostic("body_cancel");
   }
 }
 
-function cancelResponseStream<T>(
-  stream: ReadableStream<T>,
-  reason?: unknown,
+function cancelResponseStream(
+  stream: CancelableStream,
+  cause?: unknown,
 ): void {
   try {
-    void Promise.resolve(stream.cancel(reason)).catch(() =>
+    void Promise.resolve(stream.cancel(cause)).catch(() =>
       logResponseCleanupDiagnostic("body_cancel"),
     );
   } catch {
@@ -322,10 +326,10 @@ function cancelResponseStream<T>(
 
 function cancelResponseReader<T>(
   reader: ReadableStreamDefaultReader<T>,
-  reason?: unknown,
+  cause?: unknown,
 ): void {
   try {
-    void Promise.resolve(reader.cancel(reason)).catch(() =>
+    void Promise.resolve(reader.cancel(cause)).catch(() =>
       logResponseCleanupDiagnostic("reader_cancel"),
     );
   } catch {
@@ -346,7 +350,7 @@ type ReaderResult<T> = Awaited<
 function readWithSignal<T>(
   reader: ReadableStreamDefaultReader<T>,
   signal: AbortSignal | undefined,
-  requestCancel: (reason: unknown) => void,
+  requestCancel: (cause: unknown) => void,
 ): Promise<ReaderResult<T>> {
   if (!signal) {
     try {
@@ -413,12 +417,12 @@ function readWithSignal<T>(
 }
 
 function isSignalReason(
-  error: unknown,
+  cause: unknown,
   signal: AbortSignal | undefined,
 ): boolean {
   if (!signal) return false;
   try {
-    return signal.aborted && error === signal.reason;
+    return signal.aborted && cause === signal.reason;
   } catch {
     return false;
   }
@@ -456,8 +460,8 @@ function responseRequestId(response: Response): string | null {
   const canonical = response.headers.get("x-cail-request-id");
   const alias = response.headers.get("x-request-id");
   if (
-    (canonical !== null && !isCailRequestId(canonical)) ||
-    (alias !== null && !isCailRequestId(alias))
+    (canonical !== null && !REQUEST_ID_RE.test(canonical)) ||
+    (alias !== null && !REQUEST_ID_RE.test(alias))
   ) {
     throw new CailSandboxError(
       "invalid_response",
@@ -519,7 +523,7 @@ function responseError(
 }
 
 function controlValue(value: string, name: string) {
-  if (typeof value !== "string" || !CONTROL_VALUE.test(value)) {
+  if (!z.string().safeParse(value).success || !CONTROL_VALUE.test(value)) {
     throw new Error(`${name} must be a high-entropy opaque value`);
   }
   return value;
@@ -551,29 +555,16 @@ function operationHeaders(lease: SandboxLease, operation: SandboxOperation) {
 function isReadableStreamBody(
   body: BodyInit,
 ): body is ReadableStream<Uint8Array> {
-  if (typeof body !== "object" || body === null) return false;
   try {
-    return typeof (body as { getReader?: unknown }).getReader === "function";
+    return READABLE_STREAM_BODY_SCHEMA.safeParse(body).success;
   } catch {
     return false;
   }
 }
 
-function isAbortSignal(value: unknown): value is AbortSignal {
-  if (value === null || typeof value !== "object") return false;
+function isAbortSignal(value: AbortSignal | null): value is AbortSignal {
   try {
-    const candidate = value as {
-      aborted?: unknown;
-      addEventListener?: unknown;
-      removeEventListener?: unknown;
-      dispatchEvent?: unknown;
-    };
-    return (
-      typeof candidate.aborted === "boolean" &&
-      typeof candidate.addEventListener === "function" &&
-      typeof candidate.removeEventListener === "function" &&
-      typeof candidate.dispatchEvent === "function"
-    );
+    return ABORT_SIGNAL_SCHEMA.safeParse(value).success;
   } catch {
     return false;
   }
@@ -582,12 +573,12 @@ function isAbortSignal(value: unknown): value is AbortSignal {
 async function parseSuccessRecord(
   response: Response,
   message: string,
-): Promise<Record<string, unknown>> {
+): Promise<JsonObject> {
   if (responseMediaType(response) !== "application/json") {
     cancelResponseBody(response);
     throw responseError(response, "invalid_response", message);
   }
-  let body: unknown;
+  let body: JsonValue;
   try {
     body = await readBoundedJson(response);
   } catch (cause) {
@@ -601,10 +592,11 @@ async function parseSuccessRecord(
       cause,
     );
   }
-  if (!isRecord(body)) {
+  const parsed = JSON_OBJECT_SCHEMA.safeParse(body);
+  if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
-  return body;
+  return parsed.data;
 }
 
 class ResponseBodyReadError extends Error {
@@ -618,7 +610,7 @@ class ResponseBodyReadError extends Error {
 async function readBoundedJson(
   response: Response,
   signal = responseSignals.get(response),
-): Promise<unknown> {
+): Promise<JsonValue> {
   if (signal?.aborted) {
     cancelResponseBody(response, signal.reason);
     throw signal.reason;
@@ -654,10 +646,10 @@ async function readBoundedJson(
   let total = 0;
   let text = "";
   let cancelRequested = false;
-  const requestCancel = (reason: unknown) => {
+  const requestCancel = (cause: unknown) => {
     if (cancelRequested) return;
     cancelRequested = true;
-    cancelResponseReader(reader, reason);
+    cancelResponseReader(reader, cause);
   };
   try {
     while (true) {
@@ -685,6 +677,8 @@ async function readBoundedJson(
       text += decoder.decode(value, { stream: true });
     }
   } catch (cause) {
+    // SAFETY: WeakSet#has returns false for primitives without inspecting an
+    // object's prototype, which preserves hostile thrown values verbatim.
     if (liveResponseBodyReadErrors.has(cause as object)) throw cause;
     if (isSignalReason(cause, signal) || isAbortError(cause)) throw cause;
     requestCancel(cause);
@@ -697,7 +691,7 @@ async function readBoundedJson(
   }
 
   try {
-    return JSON.parse(text);
+    return JSON_VALUE_SCHEMA.parse(JSON.parse(text));
   } catch (cause) {
     throw new ResponseBodyReadError(
       "Sandbox JSON response was not valid JSON.",
@@ -706,8 +700,7 @@ async function readBoundedJson(
   }
 }
 
-function isDateTime(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+function isDateTime(value: string): boolean {
   const match =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
       value,
@@ -756,8 +749,7 @@ function isDateTime(value: unknown): value is string {
   );
 }
 
-function isFullDate(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+function isFullDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return false;
   const year = Number(match[1]);
@@ -783,41 +775,108 @@ function isFullDate(value: unknown): value is string {
   );
 }
 
-function isNonnegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
-}
+const DATE_TIME_SCHEMA = z.string().refine(isDateTime);
+const FULL_DATE_SCHEMA = z.string().refine(isFullDate);
+const NONNEGATIVE_SAFE_INTEGER_SCHEMA = z.number().int().nonnegative();
+const POSITIVE_SAFE_INTEGER_SCHEMA = z.number().int().positive();
+const SANDBOX_INSTANCE_CLASS_SCHEMA = z.enum(["lite", "basic", "standard-1"]);
+const LIFECYCLE_SCHEMA = z
+  .object({
+    id: z.string().regex(UUID),
+    state: z.literal("active"),
+    expires_at: DATE_TIME_SCHEMA,
+    lease_capability: z.string().regex(CONTROL_VALUE),
+    lease_generation: POSITIVE_SAFE_INTEGER_SCHEMA,
+    instance_class: SANDBOX_INSTANCE_CLASS_SCHEMA,
+  })
+  .strict();
+const OPERATION_SCHEMA = z
+  .object({
+    id: z.string().regex(UUID),
+    operation_capability: z.string().regex(CONTROL_VALUE),
+    operation_generation: POSITIVE_SAFE_INTEGER_SCHEMA,
+    expires_at: DATE_TIME_SCHEMA,
+  })
+  .strict();
+const RUNNING_SCHEMA = z
+  .object({
+    running: z.boolean(),
+    state: z.literal("active"),
+    expires_at: DATE_TIME_SCHEMA,
+    lease_generation: POSITIVE_SAFE_INTEGER_SCHEMA,
+  })
+  .strict();
+const USAGE_SCHEMA = z
+  .object({
+    period: FULL_DATE_SCHEMA,
+    unit: z.literal("mib_milliseconds"),
+    limit: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
+    used: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
+    reserved: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
+    remaining: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
+    active_leases: z.union([z.literal(0), z.literal(1)]),
+  })
+  .strict()
+  .refine(
+    (usage) =>
+      BigInt(usage.remaining) ===
+      (BigInt(usage.limit) > BigInt(usage.used) + BigInt(usage.reserved)
+        ? BigInt(usage.limit) - BigInt(usage.used) - BigInt(usage.reserved)
+        : 0n),
+  );
+const SETTLEMENT_SCHEMA = z
+  .object({
+    lease_id: z.string().regex(UUID),
+    period_start: DATE_TIME_SCHEMA,
+    period_end: DATE_TIME_SCHEMA,
+    unit: z.literal("mib_milliseconds"),
+    quantity: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
+    settled_at: DATE_TIME_SCHEMA,
+    state: z.literal("settled"),
+  })
+  .strict();
+const ERROR_ENVELOPE_SCHEMA = z
+  .object({
+    error: z
+      .object({
+        message: z.string(),
+        type: z.string().refine((type) => ERROR_TYPES.has(type)),
+        param: z.union([z.string(), z.null()]),
+        code: z.string(),
+        cail: CAIL_DETAILS_SCHEMA.optional(),
+      })
+      .strict(),
+  })
+  .strict();
+const WRITE_ACKNOWLEDGEMENT_SCHEMA = z.object({ ok: z.literal(true) }).strict();
+const COMMAND_OUTPUT_SCHEMA = z.object({ data: z.string() }).strict();
+const COMMAND_EXIT_SCHEMA = z
+  .object({ exit_code: z.number().int() })
+  .strict();
+const COMMAND_ERROR_SCHEMA = z
+  .object({
+    code: z.string(),
+    message: z.string(),
+    request_id: z.string().regex(REQUEST_ID_RE),
+  })
+  .strict();
 
 async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
   const message = "Sandbox lifecycle response was malformed.";
-  const body = await parseSuccessRecord(response, message);
-  if (
-    !hasOnlyKeys(body, [
-      "id",
-      "state",
-      "expires_at",
-      "lease_capability",
-      "lease_generation",
-      "instance_class",
-    ]) ||
-    typeof body.id !== "string" ||
-    !UUID.test(body.id) ||
-    body.state !== "active" ||
-    !isDateTime(body.expires_at) ||
-    typeof body.lease_capability !== "string" ||
-    !CONTROL_VALUE.test(body.lease_capability) ||
-    !Number.isSafeInteger(body.lease_generation) ||
-    (body.lease_generation as number) < 1 ||
-    !["lite", "basic", "standard-1"].includes(String(body.instance_class))
-  ) {
+  const parsed = LIFECYCLE_SCHEMA.safeParse(
+    await parseSuccessRecord(response, message),
+  );
+  if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
+  const body = parsed.data;
   return {
     id: body.id,
     state: "active",
     expiresAt: body.expires_at,
     leaseCapability: body.lease_capability,
-    leaseGeneration: body.lease_generation as number,
-    instanceClass: body.instance_class as SandboxInstanceClass,
+    leaseGeneration: body.lease_generation,
+    instanceClass: body.instance_class,
   };
 }
 
@@ -826,86 +885,48 @@ async function parseOperation(
   operationId: string,
 ): Promise<SandboxOperation> {
   const message = "Sandbox operation response was malformed.";
-  const body = await parseSuccessRecord(response, message);
-  if (
-    !hasOnlyKeys(body, [
-      "id",
-      "operation_capability",
-      "operation_generation",
-      "expires_at",
-    ]) ||
-    typeof body.id !== "string" ||
-    !UUID.test(body.id) ||
-    typeof body.operation_capability !== "string" ||
-    !CONTROL_VALUE.test(body.operation_capability) ||
-    !Number.isSafeInteger(body.operation_generation) ||
-    (body.operation_generation as number) < 1 ||
-    !isDateTime(body.expires_at)
-  ) {
+  const parsed = OPERATION_SCHEMA.safeParse(
+    await parseSuccessRecord(response, message),
+  );
+  if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
+  const body = parsed.data;
   return {
     id: body.id,
     operationId,
     operationCapability: body.operation_capability,
-    operationGeneration: body.operation_generation as number,
+    operationGeneration: body.operation_generation,
     expiresAt: body.expires_at,
   };
 }
 
 async function parseRunning(response: Response): Promise<SandboxRunning> {
   const message = "Sandbox status response was malformed.";
-  const body = await parseSuccessRecord(response, message);
-  if (
-    !hasOnlyKeys(body, [
-      "running",
-      "state",
-      "expires_at",
-      "lease_generation",
-    ]) ||
-    typeof body.running !== "boolean" ||
-    body.state !== "active" ||
-    !isDateTime(body.expires_at) ||
-    !Number.isSafeInteger(body.lease_generation) ||
-    (body.lease_generation as number) < 1
-  ) {
+  const parsed = RUNNING_SCHEMA.safeParse(
+    await parseSuccessRecord(response, message),
+  );
+  if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
+  const body = parsed.data;
   return {
     running: body.running,
     state: "active",
     expiresAt: body.expires_at,
-    leaseGeneration: body.lease_generation as number,
+    leaseGeneration: body.lease_generation,
   };
 }
 
 async function parseUsage(response: Response): Promise<SandboxUsage> {
   const message = "Sandbox usage response was malformed.";
-  const body = await parseSuccessRecord(response, message);
-  if (
-    !hasOnlyKeys(body, [
-      "period",
-      "unit",
-      "limit",
-      "used",
-      "reserved",
-      "remaining",
-      "active_leases",
-    ]) ||
-    !isFullDate(body.period) ||
-    body.unit !== "mib_milliseconds" ||
-    !isNonnegativeSafeInteger(body.limit) ||
-    !isNonnegativeSafeInteger(body.used) ||
-    !isNonnegativeSafeInteger(body.reserved) ||
-    !isNonnegativeSafeInteger(body.remaining) ||
-    (body.active_leases !== 0 && body.active_leases !== 1) ||
-    BigInt(body.remaining) !==
-      (BigInt(body.limit) > BigInt(body.used) + BigInt(body.reserved)
-        ? BigInt(body.limit) - BigInt(body.used) - BigInt(body.reserved)
-        : 0n)
-  ) {
+  const parsed = USAGE_SCHEMA.safeParse(
+    await parseSuccessRecord(response, message),
+  );
+  if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
+  const body = parsed.data;
   return {
     period: body.period,
     unit: "mib_milliseconds",
@@ -922,27 +943,13 @@ async function parseSettlement(
   expectedLeaseId: string,
 ): Promise<SandboxSettlement> {
   const message = "Sandbox settlement response was malformed.";
-  const body = await parseSuccessRecord(response, message);
-  if (
-    !hasOnlyKeys(body, [
-      "lease_id",
-      "period_start",
-      "period_end",
-      "unit",
-      "quantity",
-      "settled_at",
-      "state",
-    ]) ||
-    body.lease_id !== expectedLeaseId ||
-    !isDateTime(body.period_start) ||
-    !isDateTime(body.period_end) ||
-    body.unit !== "mib_milliseconds" ||
-    !isNonnegativeSafeInteger(body.quantity) ||
-    !isDateTime(body.settled_at) ||
-    body.state !== "settled"
-  ) {
+  const parsed = SETTLEMENT_SCHEMA.safeParse(
+    await parseSuccessRecord(response, message),
+  );
+  if (!parsed.success || parsed.data.lease_id !== expectedLeaseId) {
     throw responseError(response, "invalid_response", message);
   }
+  const body = parsed.data;
   return {
     leaseId: body.lease_id,
     periodStart: body.period_start,
@@ -981,7 +988,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
       shouldRetry,
     );
   }
-  let body: unknown;
+  let body: JsonValue;
   try {
     body = await readBoundedJson(response);
   } catch (cause) {
@@ -1000,31 +1007,19 @@ async function parseError(response: Response): Promise<CailSandboxError> {
     );
   }
 
-  if (isRecord(body) && hasOnlyKeys(body, ["error"]) && isRecord(body.error)) {
-    const error = body.error;
-    const cail = error.cail;
-    const validCail = cail === undefined || isCailDetails(cail);
-    const validParam = error.param === null || typeof error.param === "string";
-    if (
-      hasOnlyKeys(error, ["message", "type", "param", "code", "cail"]) &&
-      typeof error.code === "string" &&
-      typeof error.message === "string" &&
-      typeof error.type === "string" &&
-      ERROR_TYPES.has(error.type) &&
-      validParam &&
-      validCail
-    ) {
-      return new CailSandboxError(
-        error.code,
-        error.message,
-        response.status,
-        error.type,
-        error.param as string | null,
-        cail === undefined ? {} : { ...cail },
-        requestId,
-        shouldRetry,
-      );
-    }
+  const parsed = ERROR_ENVELOPE_SCHEMA.safeParse(body);
+  if (parsed.success) {
+    const error = parsed.data.error;
+    return new CailSandboxError(
+      error.code,
+      error.message,
+      response.status,
+      error.type,
+      error.param,
+      error.cail === undefined ? {} : { ...error.cail },
+      requestId,
+      shouldRetry,
+    );
   }
 
   return new CailSandboxError(
@@ -1042,18 +1037,14 @@ async function parseError(response: Response): Promise<CailSandboxError> {
 export function createCailSandboxClient(
   options: SandboxClientOptions,
 ): CailSandboxClient {
-  if (
-    options === null ||
-    typeof options !== "object" ||
-    Array.isArray(options)
-  ) {
+  if (!isObjectInput(options)) {
     throw new Error("options must be an object");
   }
   if (
-    typeof options.baseUrl !== "string" ||
+    !z.string().safeParse(options.baseUrl).success ||
     options.baseUrl.length === 0 ||
     options.baseUrl.trim() !== options.baseUrl ||
-    CONTROL_CHARACTERS.test(options.baseUrl)
+    hasControlCharacters(options.baseUrl)
   ) {
     throw new Error("baseUrl must be a non-empty URL string");
   }
@@ -1083,7 +1074,7 @@ export function createCailSandboxClient(
       "baseUrl must not contain credentials, a query, or a fragment",
     );
   }
-  if (typeof options.app !== "string" || !APP.test(options.app)) {
+  if (!z.string().safeParse(options.app).success || !APP.test(options.app)) {
     throw new Error("app must be a stable lowercase slug");
   }
   if (
@@ -1098,7 +1089,7 @@ export function createCailSandboxClient(
   }
 
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") {
+  if (!z.function().safeParse(fetchImpl).success) {
     throw new Error("fetchImpl must be a function");
   }
   const basePath = parsedBaseUrl.pathname.replace(/\/+$/, "");
@@ -1351,11 +1342,13 @@ export function createCailSandboxClient(
         callOptions,
       );
       requireStatus(response, 200);
-      const result = await parseSuccessRecord(
+      const result = WRITE_ACKNOWLEDGEMENT_SCHEMA.safeParse(
+        await parseSuccessRecord(
         response,
         "Sandbox file-write response was malformed.",
+        ),
       );
-      if (!hasOnlyKeys(result, ["ok"]) || result.ok !== true) {
+      if (!result.success) {
         throw responseError(
           response,
           "invalid_response",
@@ -1371,7 +1364,7 @@ export function createCailSandboxClient(
       execOptions: SandboxExecOptions = {},
     ) {
       if (
-        typeof command !== "string" ||
+        !z.string().safeParse(command).success ||
         command.length === 0 ||
         command.length > MAX_COMMAND_CHARS
       ) {
@@ -1402,24 +1395,26 @@ export function createCailSandboxClient(
   };
 }
 
-function isAbortError(error: unknown): boolean {
+function isAbortError(cause: unknown): boolean {
   if (DOM_EXCEPTION_NAME_GETTER === undefined) return false;
   try {
-    const name = DOM_EXCEPTION_NAME_GETTER.call(error);
+    const name = DOM_EXCEPTION_NAME_GETTER.call(cause);
     return name === "AbortError" || name === "TimeoutError";
   } catch {
     return false;
   }
 }
 
-function isParseError(error: unknown): boolean {
-  return liveEventSourceParseErrors.has(error as object);
+function isEventSourceParseError(cause: unknown): boolean {
+  // SAFETY: WeakSet#has returns false for primitives and checks object identity
+  // without invoking a hostile value's prototype traps.
+  return liveEventSourceParseErrors.has(cause as object);
 }
 
 // The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
 function encodeId(id: string) {
-  if (typeof id !== "string" || !UUID.test(id)) {
+  if (!z.string().safeParse(id).success || !UUID.test(id)) {
     throw new Error("id must be a sandbox-issued identifier");
   }
   return encodeURIComponent(id);
@@ -1427,7 +1422,7 @@ function encodeId(id: string) {
 
 function encodePath(path: string) {
   if (
-    typeof path !== "string" ||
+    !z.string().safeParse(path).success ||
     path.length === 0 ||
     path.startsWith("/") ||
     path.includes("\0") ||
@@ -1456,23 +1451,23 @@ async function* parseCommandEvents(
     return error;
   };
   let terminal: CommandTerminalEvent | null = null;
-  let cleanupStream: ReadableStream<unknown> | null = null;
+  let cleanupStream: CancelableStream | null = null;
   let reader: ReadableStreamDefaultReader<EventSourceMessage> | null = null;
   let streamDone = false;
   let primaryError: unknown;
   let cancelRequested = false;
-  const requestCancel = (reason: unknown) => {
+  const requestCancel = (cause: unknown) => {
     if (cancelRequested) return;
     cancelRequested = true;
     if (reader) {
-      cancelResponseReader(reader, reason);
+      cancelResponseReader(reader, cause);
     } else if (cleanupStream) {
-      cancelResponseStream(cleanupStream, reason);
+      cancelResponseStream(cleanupStream, cause);
     }
   };
   try {
     const body = response.body;
-    cleanupStream = body as ReadableStream<unknown> | null;
+    cleanupStream = body;
     if (responseMediaType(response) !== "text/event-stream") {
       throw invalidStream(
         "Command response did not use the text/event-stream media type.",
@@ -1485,7 +1480,7 @@ async function* parseCommandEvents(
     const decoded = body.pipeThrough(
       new TextDecoderStream("utf-8", { fatal: true }),
     );
-    cleanupStream = decoded as ReadableStream<unknown>;
+    cleanupStream = decoded;
     const events = decoded.pipeThrough(
       new EventSourceParserStream({
         maxBufferSize: 2 * 1024 * 1024,
@@ -1495,7 +1490,7 @@ async function* parseCommandEvents(
         },
       }),
     );
-    cleanupStream = events as ReadableStream<unknown>;
+    cleanupStream = events;
     reader = events.getReader();
     while (true) {
       const { done, value: message } = await readWithSignal(
@@ -1520,32 +1515,33 @@ async function* parseCommandEvents(
       ) {
         throw invalidStream("Command stream contained an unknown event type.");
       }
-      let parsed: unknown;
+      let parsed: JsonValue;
       try {
-        parsed = JSON.parse(message.data);
+        parsed = JSON_VALUE_SCHEMA.parse(JSON.parse(message.data));
       } catch {
         throw invalidStream("Command stream contained invalid JSON.");
       }
-      if (!isRecord(parsed)) {
+      if (!JSON_OBJECT_SCHEMA.safeParse(parsed).success) {
         throw invalidStream("Command stream event was malformed.");
       }
-      const data = parsed;
       if (event === "stdout" || event === "stderr") {
         if (terminal) {
           throw invalidStream("Output followed the terminal event.");
         }
-        if (!hasOnlyKeys(data, ["data"]) || typeof data.data !== "string") {
+        const output = COMMAND_OUTPUT_SCHEMA.safeParse(parsed);
+        if (!output.success) {
           throw invalidStream("Command output event was malformed.");
         }
+        const data = output.data.data;
         if (
-          data.data.length > MAX_OUTPUT_EVENT_BASE64_CHARS ||
-          !CANONICAL_BASE64.test(data.data)
+          data.length > MAX_OUTPUT_EVENT_BASE64_CHARS ||
+          !CANONICAL_BASE64.test(data)
         ) {
           throw invalidStream("Command output was not valid canonical base64.");
         }
         let bytes: Uint8Array;
         try {
-          bytes = Uint8Array.from(atob(data.data), (value) =>
+          bytes = Uint8Array.from(atob(data), (value) =>
             value.charCodeAt(0),
           );
         } catch {
@@ -1557,7 +1553,7 @@ async function* parseCommandEvents(
             ...bytes.subarray(offset, offset + 8_192),
           );
         }
-        if (btoa(roundTrip) !== data.data) {
+        if (btoa(roundTrip) !== data) {
           throw invalidStream("Command output was not valid canonical base64.");
         }
         if (bytes.byteLength > MAX_OUTPUT_EVENT_BYTES) {
@@ -1568,40 +1564,37 @@ async function* parseCommandEvents(
         if (terminal) {
           throw invalidStream("Command stream had multiple terminal events.");
         }
-        if (
-          !hasOnlyKeys(data, ["exit_code"]) ||
-          !Number.isSafeInteger(data.exit_code)
-        ) {
+        const exit = COMMAND_EXIT_SCHEMA.safeParse(parsed);
+        if (!exit.success) {
           throw invalidStream("Command exit event was malformed.");
         }
-        terminal = { type: "exit", exitCode: data.exit_code as number };
+        terminal = { type: "exit", exitCode: exit.data.exit_code };
       } else {
         if (terminal) {
           throw invalidStream("Command stream had multiple terminal events.");
         }
-        if (
-          !hasOnlyKeys(data, ["code", "message", "request_id"]) ||
-          typeof data.code !== "string" ||
-          typeof data.message !== "string" ||
-          typeof data.request_id !== "string" ||
-          !isCailRequestId(data.request_id)
-        ) {
+        const commandError = COMMAND_ERROR_SCHEMA.safeParse(parsed);
+        if (!commandError.success) {
           throw invalidStream("Command error event was malformed.");
         }
         terminal = {
           type: "error",
-          code: data.code,
-          message: data.message,
-          requestId: data.request_id,
+          code: commandError.data.code,
+          message: commandError.data.message,
+          requestId: commandError.data.request_id,
         };
       }
     }
   } catch (error) {
     primaryError = error;
-    if (ownedStreamErrors.has(error as object)) throw error;
+    // SAFETY: WeakSet#has is identity-only and returns false for non-objects;
+    // it does not invoke prototype traps on hostile transport failures.
+    if (ownedStreamErrors.has(error as object)) {
+      throw error;
+    }
     // Deliberate abort is not a framing failure — surface it unchanged.
     if (isSignalReason(error, signal) || isAbortError(error)) throw error;
-    if (isParseError(error)) {
+    if (isEventSourceParseError(error)) {
       throw invalidStream("Command stream framing was invalid.", error);
     }
     throw responseError(

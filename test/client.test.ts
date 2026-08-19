@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
+import { z } from "zod";
 import {
   CailSandboxError,
   correlationFromHeaders,
   createCailSandboxClient,
   type CailCorrelation,
-  type FetchLike,
 } from "../src/index";
 
 const jwt = { kind: "jwt" as const, token: "session-token" };
@@ -112,20 +112,41 @@ test("rejects redirects without following or leaking credentials", async () => {
 });
 
 test("rejects malformed runtime inputs before transport", async () => {
+  // SAFETY: This test deliberately crosses the TypeScript boundary with a
+  // non-string application slug to verify the public runtime guard.
   expect(() =>
     createCailSandboxClient({
       baseUrl: "https://x",
-      app: 42 as unknown as string,
+      app: 42 as never,
       fetchImpl: async () => Response.json({}),
     }),
   ).toThrow("app must be a stable lowercase slug");
+  // SAFETY: This test deliberately supplies a non-callable transport to prove
+  // the constructor rejects it before any request can be attempted.
   expect(() =>
     createCailSandboxClient({
       baseUrl: "https://x",
       app: "kale",
-      fetchImpl: 42 as unknown as FetchLike,
+      fetchImpl: 42 as never,
     }),
   ).toThrow("fetchImpl must be a function");
+  const hostileOptions = new Proxy(
+    {
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => Response.json({}),
+    },
+    {
+      getPrototypeOf() {
+        throw new Error("private options reflection sentinel");
+      },
+    },
+  );
+  expect(() => {
+    // SAFETY: The proxy is deliberately hostile to object reflection; the
+    // constructor must convert that failure to its fixed object error.
+    createCailSandboxClient(hostileOptions as never);
+  }).toThrow("options must be an object");
 
   let fetchCalls = 0;
   const client = createCailSandboxClient({
@@ -136,13 +157,17 @@ test("rejects malformed runtime inputs before transport", async () => {
       return Response.json(runningWire);
     },
   });
+  // SAFETY: Each malformed value intentionally violates a public TypeScript
+  // signature so this regression test can exercise the corresponding runtime guard.
+  await expect(client.exec(lease, operation, 1 as never, jwt)).rejects.toThrow(
+    "command must contain",
+  );
+  // SAFETY: Null is injected only to prove the file-path runtime boundary.
   await expect(
-    client.exec(lease, operation, 1 as unknown as string, jwt),
-  ).rejects.toThrow("command must contain");
-  await expect(
-    client.readFile(lease, operation, null as unknown as string, jwt),
+    client.readFile(lease, operation, null as never, jwt),
   ).rejects.toThrow("file path must be workspace-relative");
-  await expect(client.running(lease, null as unknown as typeof jwt)).rejects.toThrow(
+  // SAFETY: Null is injected only to prove the credential runtime boundary.
+  await expect(client.running(lease, null as never)).rejects.toThrow(
     "credential must contain a valid identity JWT",
   );
   expect(fetchCalls).toBe(0);
@@ -376,13 +401,13 @@ test("uses half-duplex for streaming file uploads at the native Request boundary
     baseUrl: "https://x",
     app: "kale",
     fetchImpl: async (input, init) => {
-      seenDuplex = (init as RequestInit & { duplex?: unknown }).duplex;
+      seenDuplex = Object.getOwnPropertyDescriptor(init ?? {}, "duplex")?.value;
       if (
-        typeof init?.body === "object" &&
-        init.body !== null &&
-        typeof (init.body as { getReader?: unknown }).getReader ===
-          "function" &&
-        (init as RequestInit & { duplex?: unknown }).duplex !== "half"
+        z
+          .object({ getReader: z.function() })
+          .passthrough()
+          .safeParse(init?.body).success &&
+        seenDuplex !== "half"
       ) {
         throw new TypeError(
           "RequestInit: duplex option is required when sending a body.",
@@ -404,11 +429,13 @@ test("uses half-duplex for streaming file uploads at the native Request boundary
   ).resolves.toBeUndefined();
   expect(seenDuplex).toBe("half");
 
-  const foreignBody = {
+  // SAFETY: The client intentionally supports structurally compatible stream
+  // bodies from another realm, which BodyInit's nominal library type cannot express.
+  const foreignBody: BodyInit = {
     getReader() {
       return {};
     },
-  } as unknown as BodyInit;
+  } as never;
   await expect(
     client.writeFile(lease, operation, "a.txt", foreignBody, jwt),
   ).resolves.toBeUndefined();
@@ -525,7 +552,9 @@ test("rejects malformed runtime credentials before fetch", async () => {
     { kind: "key", token: "line\nbreak" },
   ]) {
     await expect(
-      client.running(lease, credential as typeof jwt),
+      // SAFETY: These malformed credential variants intentionally cross the
+      // static boundary to verify the runtime credential parser.
+      client.running(lease, credential as never),
     ).rejects.toThrow("valid identity JWT");
   }
   expect(calls).toBe(0);
