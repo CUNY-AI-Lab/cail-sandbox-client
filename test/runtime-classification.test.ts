@@ -38,7 +38,7 @@ type CleanupMode = "resolve" | "reject" | "never" | "throw";
 type ReleaseMode = "resolve" | "throw";
 
 function trackedErroredStream(
-  primary: unknown,
+  cause: unknown,
   cleanup: CleanupMode,
   release: ReleaseMode = "resolve",
 ) {
@@ -48,7 +48,7 @@ function trackedErroredStream(
   const releaseError = new Error("private release sentinel");
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.error(primary);
+      controller.error(cause);
     },
   });
   const getReader = stream.getReader.bind(stream);
@@ -95,8 +95,8 @@ function jsonResponse(body: ReadableStream<Uint8Array>) {
   });
 }
 
-function sseResponseForError(primary: unknown, cleanup: CleanupMode) {
-  const tracked = trackedErroredStream(primary, cleanup);
+function sseResponseForError(cause: unknown, cleanup: CleanupMode) {
+  const tracked = trackedErroredStream(cause, cleanup);
   const responseBody = new ReadableStream<Uint8Array>();
   Object.defineProperty(responseBody, "pipeThrough", {
     value: () => ({
@@ -138,7 +138,7 @@ function sseResponseFromChunks(chunks: Uint8Array[]) {
 }
 
 function setupFailureResponse(
-  primary: unknown,
+  cause: unknown,
   cleanup: CleanupMode,
   stage: "decoder" | "parser" | "reader",
 ) {
@@ -158,7 +158,7 @@ function setupFailureResponse(
       eventsCancelCalls += 1;
     }),
     getReader() {
-      throw primary;
+      throw cause;
     },
   };
   const decoded = {
@@ -166,7 +166,7 @@ function setupFailureResponse(
       decodedCancelCalls += 1;
     }),
     pipeThrough() {
-      if (stage === "parser") throw primary;
+      if (stage === "parser") throw cause;
       return events;
     },
   };
@@ -179,7 +179,7 @@ function setupFailureResponse(
     },
     pipeThrough: {
       value: () => {
-        if (stage === "decoder") throw primary;
+        if (stage === "decoder") throw cause;
         return decoded;
       },
     },
@@ -251,7 +251,9 @@ test("guards and snapshots the SSE response body accessor exactly once", async (
       shouldRetry: false,
       cause: primary,
     });
+    // SAFETY: The preceding runtime assertion establishes the Error contract.
     expect((error as Error).message).toBe("Command stream transport failed.");
+    // SAFETY: The preceding runtime assertion establishes the Error contract.
     expect((error as Error).message).not.toContain("sentinel");
     expect(throwingReads).toBe(1);
 
@@ -281,9 +283,11 @@ test("guards and snapshots the SSE response body accessor exactly once", async (
       shouldRetry: false,
       cause: callerCreated,
     });
+    // SAFETY: The preceding runtime assertion establishes the Error contract.
     expect((typedError as Error).message).toBe(
       "Command stream transport failed.",
     );
+    // SAFETY: The preceding runtime assertion establishes the Error contract.
     expect((typedError as Error).message).not.toContain("sentinel");
     expect(typedReads).toBe(1);
 
@@ -340,7 +344,9 @@ test("rejects malformed SSE UTF-8, including split invalid sequences", async () 
         shouldRetry: false,
         cause: { name: "TypeError" },
       });
+      // SAFETY: The preceding runtime assertion establishes the Error contract.
       expect((error as Error).message).toBe("Command stream transport failed.");
+      // SAFETY: The preceding runtime assertion establishes the Error contract.
       expect((error as Error).message).not.toContain("bad");
     }
   }
@@ -383,7 +389,7 @@ test("preserves valid UTF-8 split inside a multibyte SSE field", async () => {
 
 test("guards every SSE setup stage and cleans the latest owned stream", async () => {
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   const diagnostic = spyOn(console, "error").mockImplementation(() => {
     throw new Error("private diagnostic sink sentinel");
@@ -414,6 +420,7 @@ test("guards every SSE setup stage and cleans the latest owned stream", async ()
             shouldRetry: false,
             cause: primary,
           });
+          // SAFETY: The preceding runtime assertion establishes the Error contract.
           expect((outcome as Error).message).not.toContain("sentinel");
           expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
           expect(tracked.decodedCancelCalls()).toBe(stage === "parser" ? 1 : 0);
@@ -432,7 +439,7 @@ test("guards every SSE setup stage and cleans the latest owned stream", async ()
 
 test("SSE reader cleanup cannot stall or replace the primary failure", async () => {
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   const diagnostic = spyOn(console, "error").mockImplementation(() => {
     throw new Error("private diagnostic sink sentinel");
@@ -464,6 +471,7 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
             code: "stream_transport_error",
             cause: primary,
           });
+          // SAFETY: The preceding runtime assertion establishes the Error contract.
           expect((outcome as Error).message).not.toContain("sentinel");
           expect(tracked.cancelCalls()).toBe(1);
           expect(tracked.releaseCalls()).toBe(1);
@@ -481,7 +489,7 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
 
 test("preserves hostile JSON read failures through every cleanup outcome", async () => {
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   const diagnostic = spyOn(console, "error").mockImplementation(() => {
     throw new Error("private diagnostic sink sentinel");
@@ -520,7 +528,9 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
           shouldRetry: false,
           cause: { name: "ResponseBodyReadError" },
         });
+        // SAFETY: The preceding runtime assertion establishes the exact client error class.
         const responseError = outcome as SourceCailSandboxError;
+        // SAFETY: The matched response-body wrapper contract establishes an Error cause.
         expect((responseError.cause as Error).cause).toBe(primary);
         expect(responseError.message).not.toContain("sentinel");
         expect(prototypeReads).toBe(0);
@@ -542,7 +552,7 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
 
 test("contains every hostile SSE classifier stage and preserves metadata", async () => {
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   const diagnostic = spyOn(console, "error").mockImplementation(() => {
     throw new Error("private diagnostic sink sentinel");
@@ -602,6 +612,7 @@ test("contains every hostile SSE classifier stage and preserves metadata", async
           shouldRetry: false,
           cause: primary,
         });
+        // SAFETY: The preceding runtime assertion establishes the Error contract.
         expect((outcome as Error).message).not.toContain("sentinel");
         expect(tracked.cancelCalls()).toBe(1);
         expect(tracked.releaseCalls()).toBe(1);
@@ -662,6 +673,7 @@ test("retains genuine typed, AbortError, TimeoutError, and ParseError controls",
       requestId,
       cause: { name: "ParseError" },
     });
+    // SAFETY: The preceding runtime assertion establishes the exact client error class.
     expect((parseError as SourceCailSandboxError).cause).toBeInstanceOf(
       ParseError,
     );
@@ -707,7 +719,9 @@ test("rejects forged AbortError, TimeoutError, and ParseError authority", async 
         requestId,
         shouldRetry: false,
       });
+      // SAFETY: The preceding runtime assertion establishes the exact client error class.
       expect((error as SourceCailSandboxError).cause).toBe(primary);
+      // SAFETY: The preceding runtime assertion establishes the Error contract.
       expect((error as Error).message).not.toContain("sentinel");
       expect(tracked.cancelCalls()).toBe(1);
       expect(tracked.releaseCalls()).toBe(1);
@@ -731,6 +745,7 @@ test("keeps private stream transport causes exact and non-enumerable", async () 
       requestId,
       shouldRetry: false,
     });
+    // SAFETY: The preceding runtime assertion establishes the Error contract.
     expect((error as Error).cause).toBe(primary);
     expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
       value: primary,
@@ -776,6 +791,8 @@ test("contains hostile correlation failures before fetch", async () => {
         return Response.json({ running: true });
       },
     });
+    // SAFETY: The proxy is deliberately not a correlation object; this test
+    // crosses the static boundary to verify contained hostile reflection.
     const error = await client
       .running(lease, jwt, {
         correlation: correlation as never,
@@ -802,6 +819,8 @@ test("contains hostile correlation failures before fetch", async () => {
         },
       },
     );
+    // SAFETY: The proxy is deliberately not a correlation object; this test
+    // crosses the static boundary to verify a single safe public error.
     const forgedError = await client
       .running(lease, jwt, {
         correlation: forgedCorrelation as never,
@@ -849,6 +868,8 @@ test("uses one safe correlation validation message", async () => {
         app: "runtime-classification",
         fetchImpl: async () => Response.json({ running: true }),
       });
+      // SAFETY: Each table entry is deliberately malformed and crosses the
+      // static boundary solely to exercise correlation validation.
       const error = await client
         .running(lease, jwt, {
           correlation: correlation as never,

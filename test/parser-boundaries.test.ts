@@ -413,7 +413,7 @@ test("contains a throwing cleanup diagnostic sink", async () => {
   const cleanupError = new Error("cleanup rejection");
   const diagnosticError = new Error("diagnostic sink failure");
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
   process.on("unhandledRejection", onUnhandled);
   const diagnostic = spyOn(console, "error").mockImplementation(() => {
     throw diagnosticError;
@@ -484,14 +484,16 @@ test("snapshots a JSON body once and cancels failed reader acquisition", async (
   let bodyReads = 0;
   let cancelCalls = 0;
   const primary = new Error("private reader acquisition failure");
-  const body = {
+  // SAFETY: This deliberately partial stream supplies only the reader and
+  // cancellation operations exercised by the failed-acquisition boundary.
+  const body: ReadableStream<Uint8Array> = {
     getReader() {
       throw primary;
     },
     cancel() {
       cancelCalls += 1;
     },
-  } as unknown as ReadableStream<Uint8Array>;
+  } as never;
   const response = new Response(null, {
     headers: { "content-type": "application/json" },
   });
