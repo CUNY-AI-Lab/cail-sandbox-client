@@ -130,6 +130,23 @@ test("rejects malformed runtime inputs before transport", async () => {
       fetchImpl: 42 as never,
     }),
   ).toThrow("fetchImpl must be a function");
+  const hostileOptions = new Proxy(
+    {
+      baseUrl: "https://x",
+      app: "kale",
+      fetchImpl: async () => Response.json({}),
+    },
+    {
+      getPrototypeOf() {
+        throw new Error("private options reflection sentinel");
+      },
+    },
+  );
+  expect(() => {
+    // SAFETY: The proxy is deliberately hostile to object reflection; the
+    // constructor must convert that failure to its fixed object error.
+    createCailSandboxClient(hostileOptions as never);
+  }).toThrow("options must be an object");
 
   let fetchCalls = 0;
   const client = createCailSandboxClient({

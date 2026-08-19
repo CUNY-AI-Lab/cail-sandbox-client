@@ -239,6 +239,15 @@ const ABORT_SIGNAL_SCHEMA = z
     dispatchEvent: z.function(),
   })
   .passthrough();
+const OBJECT_INPUT_SCHEMA = z.object({}).passthrough();
+
+function isObjectInput(input: SandboxClientOptions): boolean {
+  try {
+    return OBJECT_INPUT_SCHEMA.safeParse(input).success;
+  } catch {
+    return false;
+  }
+}
 
 function hasControlCharacters(value: string): boolean {
   return Array.from(value).some((character) => {
@@ -1028,7 +1037,7 @@ async function parseError(response: Response): Promise<CailSandboxError> {
 export function createCailSandboxClient(
   options: SandboxClientOptions,
 ): CailSandboxClient {
-  if (!z.object({}).passthrough().safeParse(options).success) {
+  if (!isObjectInput(options)) {
     throw new Error("options must be an object");
   }
   if (

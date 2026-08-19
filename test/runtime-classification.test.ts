@@ -37,6 +37,23 @@ const runtimes = [
 type CleanupMode = "resolve" | "reject" | "never" | "throw";
 type ReleaseMode = "resolve" | "throw";
 
+function requireRuntimeError(
+  cause: unknown,
+  ErrorClass: typeof SourceCailSandboxError,
+): SourceCailSandboxError {
+  if (!(cause instanceof ErrorClass)) {
+    throw new Error("expected a CailSandboxError result");
+  }
+  return cause;
+}
+
+function requireError(cause: unknown): Error {
+  if (!(cause instanceof Error)) {
+    throw new Error("expected an Error cause");
+  }
+  return cause;
+}
+
 function trackedErroredStream(
   cause: unknown,
   cleanup: CleanupMode,
@@ -251,10 +268,12 @@ test("guards and snapshots the SSE response body accessor exactly once", async (
       shouldRetry: false,
       cause: primary,
     });
-    // SAFETY: The preceding runtime assertion establishes the Error contract.
-    expect((error as Error).message).toBe("Command stream transport failed.");
-    // SAFETY: The preceding runtime assertion establishes the Error contract.
-    expect((error as Error).message).not.toContain("sentinel");
+    expect(requireRuntimeError(error, runtime.ErrorClass).message).toBe(
+      "Command stream transport failed.",
+    );
+    expect(requireRuntimeError(error, runtime.ErrorClass).message).not.toContain(
+      "sentinel",
+    );
     expect(throwingReads).toBe(1);
 
     const callerCreated = new runtime.ErrorClass(
@@ -283,12 +302,12 @@ test("guards and snapshots the SSE response body accessor exactly once", async (
       shouldRetry: false,
       cause: callerCreated,
     });
-    // SAFETY: The preceding runtime assertion establishes the Error contract.
-    expect((typedError as Error).message).toBe(
+    expect(requireRuntimeError(typedError, runtime.ErrorClass).message).toBe(
       "Command stream transport failed.",
     );
-    // SAFETY: The preceding runtime assertion establishes the Error contract.
-    expect((typedError as Error).message).not.toContain("sentinel");
+    expect(
+      requireRuntimeError(typedError, runtime.ErrorClass).message,
+    ).not.toContain("sentinel");
     expect(typedReads).toBe(1);
 
     let successfulReads = 0;
@@ -344,10 +363,12 @@ test("rejects malformed SSE UTF-8, including split invalid sequences", async () 
         shouldRetry: false,
         cause: { name: "TypeError" },
       });
-      // SAFETY: The preceding runtime assertion establishes the Error contract.
-      expect((error as Error).message).toBe("Command stream transport failed.");
-      // SAFETY: The preceding runtime assertion establishes the Error contract.
-      expect((error as Error).message).not.toContain("bad");
+      expect(requireRuntimeError(error, runtime.ErrorClass).message).toBe(
+        "Command stream transport failed.",
+      );
+      expect(requireRuntimeError(error, runtime.ErrorClass).message).not.toContain(
+        "bad",
+      );
     }
   }
 });
@@ -420,8 +441,9 @@ test("guards every SSE setup stage and cleans the latest owned stream", async ()
             shouldRetry: false,
             cause: primary,
           });
-          // SAFETY: The preceding runtime assertion establishes the Error contract.
-          expect((outcome as Error).message).not.toContain("sentinel");
+          expect(
+            requireRuntimeError(outcome, runtime.ErrorClass).message,
+          ).not.toContain("sentinel");
           expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
           expect(tracked.decodedCancelCalls()).toBe(stage === "parser" ? 1 : 0);
           expect(tracked.eventsCancelCalls()).toBe(stage === "reader" ? 1 : 0);
@@ -471,8 +493,9 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
             code: "stream_transport_error",
             cause: primary,
           });
-          // SAFETY: The preceding runtime assertion establishes the Error contract.
-          expect((outcome as Error).message).not.toContain("sentinel");
+          expect(
+            requireRuntimeError(outcome, runtime.ErrorClass).message,
+          ).not.toContain("sentinel");
           expect(tracked.cancelCalls()).toBe(1);
           expect(tracked.releaseCalls()).toBe(1);
         }
@@ -528,10 +551,8 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
           shouldRetry: false,
           cause: { name: "ResponseBodyReadError" },
         });
-        // SAFETY: The preceding runtime assertion establishes the exact client error class.
-        const responseError = outcome as SourceCailSandboxError;
-        // SAFETY: The matched response-body wrapper contract establishes an Error cause.
-        expect((responseError.cause as Error).cause).toBe(primary);
+        const responseError = requireRuntimeError(outcome, runtime.ErrorClass);
+        expect(requireError(responseError.cause).cause).toBe(primary);
         expect(responseError.message).not.toContain("sentinel");
         expect(prototypeReads).toBe(0);
         expect(tracked.cancelCalls()).toBe(1);
@@ -612,8 +633,9 @@ test("contains every hostile SSE classifier stage and preserves metadata", async
           shouldRetry: false,
           cause: primary,
         });
-        // SAFETY: The preceding runtime assertion establishes the Error contract.
-        expect((outcome as Error).message).not.toContain("sentinel");
+        expect(
+          requireRuntimeError(outcome, runtime.ErrorClass).message,
+        ).not.toContain("sentinel");
         expect(tracked.cancelCalls()).toBe(1);
         expect(tracked.releaseCalls()).toBe(1);
       }
@@ -673,10 +695,9 @@ test("retains genuine typed, AbortError, TimeoutError, and ParseError controls",
       requestId,
       cause: { name: "ParseError" },
     });
-    // SAFETY: The preceding runtime assertion establishes the exact client error class.
-    expect((parseError as SourceCailSandboxError).cause).toBeInstanceOf(
-      ParseError,
-    );
+    expect(
+      requireRuntimeError(parseError, runtime.ErrorClass).cause,
+    ).toBeInstanceOf(ParseError);
   }
 });
 
@@ -719,10 +740,9 @@ test("rejects forged AbortError, TimeoutError, and ParseError authority", async 
         requestId,
         shouldRetry: false,
       });
-      // SAFETY: The preceding runtime assertion establishes the exact client error class.
-      expect((error as SourceCailSandboxError).cause).toBe(primary);
-      // SAFETY: The preceding runtime assertion establishes the Error contract.
-      expect((error as Error).message).not.toContain("sentinel");
+      const sandboxError = requireRuntimeError(error, runtime.ErrorClass);
+      expect(sandboxError.cause).toBe(primary);
+      expect(sandboxError.message).not.toContain("sentinel");
       expect(tracked.cancelCalls()).toBe(1);
       expect(tracked.releaseCalls()).toBe(1);
     }
@@ -745,8 +765,7 @@ test("keeps private stream transport causes exact and non-enumerable", async () 
       requestId,
       shouldRetry: false,
     });
-    // SAFETY: The preceding runtime assertion establishes the Error contract.
-    expect((error as Error).cause).toBe(primary);
+    expect(requireRuntimeError(error, runtime.ErrorClass).cause).toBe(primary);
     expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
       value: primary,
       enumerable: false,
