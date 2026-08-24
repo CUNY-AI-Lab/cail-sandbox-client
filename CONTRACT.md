@@ -7,9 +7,9 @@ framing, and `AbortSignal` behavior. It does not own identity verification,
 authorization, execution placement, policy, metering, settlement, or durable
 state.
 
-This v0.1.1 candidate targets the isolated Computer-backed sandbox
-constellation. Existing production integrations remain separate; this
-contract does not define a migration or compatibility layer.
+This v0.1.2 release targets the current Computer-backed Sandbox service.
+Existing production integrations remain separate; this contract does not
+define a migration or compatibility layer.
 
 ## Requests
 
