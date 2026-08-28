@@ -26,22 +26,11 @@ const validCorrelation = {
   request_id: "9bb3ff5c-62c4-4e18-bca7-b48876e43af6",
 };
 
-const runtimes = [
-  {
-    label: "source",
-    create: createSourceClient,
-    ErrorClass: SourceCailSandboxError,
-  },
-] as const;
-
 type CleanupMode = "resolve" | "reject" | "never" | "throw";
 type ReleaseMode = "resolve" | "throw";
 
-function requireRuntimeError(
-  cause: unknown,
-  ErrorClass: typeof SourceCailSandboxError,
-): SourceCailSandboxError {
-  if (!(cause instanceof ErrorClass)) {
+function requireRuntimeError(cause: unknown): SourceCailSandboxError {
+  if (!(cause instanceof SourceCailSandboxError)) {
     throw new Error("expected a CailSandboxError result");
   }
   return cause;
@@ -210,11 +199,8 @@ function setupFailureResponse(
   };
 }
 
-async function executeToError(
-  runtime: (typeof runtimes)[number],
-  response: Response,
-) {
-  const client = runtime.create({
+async function executeToError(response: Response) {
+  const client = createSourceClient({
     baseUrl: "https://sandbox.invalid",
     app: "runtime-classification",
     fetchImpl: async () => response,
@@ -231,11 +217,8 @@ async function executeToError(
   })().catch((error) => error);
 }
 
-async function executeToEvents(
-  runtime: (typeof runtimes)[number],
-  response: Response,
-) {
-  const client = runtime.create({
+async function executeToEvents(response: Response) {
+  const client = createSourceClient({
     baseUrl: "https://sandbox.invalid",
     app: "runtime-classification",
     fetchImpl: async () => response,
@@ -248,91 +231,85 @@ async function executeToEvents(
 }
 
 test("guards and snapshots the SSE response body accessor exactly once", async () => {
-  for (const runtime of runtimes) {
-    const primary = new Error("private response body accessor sentinel");
-    let throwingReads = 0;
-    const throwingResponse = new Response(null, { headers: sseHeaders() });
-    Object.defineProperty(throwingResponse, "body", {
-      get() {
-        throwingReads += 1;
-        throw primary;
-      },
-    });
+  const primary = new Error("private response body accessor sentinel");
+  let throwingReads = 0;
+  const throwingResponse = new Response(null, { headers: sseHeaders() });
+  Object.defineProperty(throwingResponse, "body", {
+    get() {
+      throwingReads += 1;
+      throw primary;
+    },
+  });
 
-    const error = await executeToError(runtime, throwingResponse);
-    expect(error).toBeInstanceOf(runtime.ErrorClass);
-    expect(error).toMatchObject({
-      code: "stream_transport_error",
-      status: 200,
-      requestId,
-      shouldRetry: false,
-      cause: primary,
-    });
-    expect(requireRuntimeError(error, runtime.ErrorClass).message).toBe(
-      "Command stream transport failed.",
-    );
-    expect(requireRuntimeError(error, runtime.ErrorClass).message).not.toContain(
-      "sentinel",
-    );
-    expect(throwingReads).toBe(1);
+  const error = await executeToError(throwingResponse);
+  expect(error).toBeInstanceOf(SourceCailSandboxError);
+  expect(error).toMatchObject({
+    code: "stream_transport_error",
+    status: 200,
+    requestId,
+    shouldRetry: false,
+    cause: primary,
+  });
+  expect(requireRuntimeError(error).message).toBe(
+    "Command stream transport failed.",
+  );
+  expect(requireRuntimeError(error).message).not.toContain("sentinel");
+  expect(throwingReads).toBe(1);
 
-    const callerCreated = new runtime.ErrorClass(
-      "caller_created",
-      "private caller-created typed sentinel",
-      418,
-    );
-    let typedReads = 0;
-    const typedThrowingResponse = new Response(null, {
-      headers: sseHeaders(),
-    });
-    Object.defineProperty(typedThrowingResponse, "body", {
-      get() {
-        typedReads += 1;
-        throw callerCreated;
-      },
-    });
+  const callerCreated = new SourceCailSandboxError(
+    "caller_created",
+    "private caller-created typed sentinel",
+    418,
+  );
+  let typedReads = 0;
+  const typedThrowingResponse = new Response(null, {
+    headers: sseHeaders(),
+  });
+  Object.defineProperty(typedThrowingResponse, "body", {
+    get() {
+      typedReads += 1;
+      throw callerCreated;
+    },
+  });
 
-    const typedError = await executeToError(runtime, typedThrowingResponse);
-    expect(typedError).not.toBe(callerCreated);
-    expect(typedError).toBeInstanceOf(runtime.ErrorClass);
-    expect(typedError).toMatchObject({
-      code: "stream_transport_error",
-      status: 200,
-      requestId,
-      shouldRetry: false,
-      cause: callerCreated,
-    });
-    expect(requireRuntimeError(typedError, runtime.ErrorClass).message).toBe(
-      "Command stream transport failed.",
-    );
-    expect(
-      requireRuntimeError(typedError, runtime.ErrorClass).message,
-    ).not.toContain("sentinel");
-    expect(typedReads).toBe(1);
+  const typedError = await executeToError(typedThrowingResponse);
+  expect(typedError).not.toBe(callerCreated);
+  expect(typedError).toBeInstanceOf(SourceCailSandboxError);
+  expect(typedError).toMatchObject({
+    code: "stream_transport_error",
+    status: 200,
+    requestId,
+    shouldRetry: false,
+    cause: callerCreated,
+  });
+  expect(requireRuntimeError(typedError).message).toBe(
+    "Command stream transport failed.",
+  );
+  expect(requireRuntimeError(typedError).message).not.toContain("sentinel");
+  expect(typedReads).toBe(1);
 
-    let successfulReads = 0;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          new TextEncoder().encode('event: exit\ndata: {"exit_code":0}\n\n'),
-        );
-        controller.close();
-      },
-    });
-    const singleReadResponse = new Response(null, { headers: sseHeaders() });
-    Object.defineProperty(singleReadResponse, "body", {
-      get() {
-        successfulReads += 1;
-        if (successfulReads > 1) throw primary;
-        return body;
-      },
-    });
+  let successfulReads = 0;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        new TextEncoder().encode('event: exit\ndata: {"exit_code":0}\n\n'),
+      );
+      controller.close();
+    },
+  });
+  const singleReadResponse = new Response(null, { headers: sseHeaders() });
+  Object.defineProperty(singleReadResponse, "body", {
+    get() {
+      successfulReads += 1;
+      if (successfulReads > 1) throw primary;
+      return body;
+    },
+  });
 
-    expect(await executeToEvents(runtime, singleReadResponse)).toEqual([
-      { type: "exit", exitCode: 0 },
-    ]);
-    expect(successfulReads).toBe(1);
-  }
+  expect(await executeToEvents(singleReadResponse)).toEqual([
+    { type: "exit", exitCode: 0 },
+  ]);
+  expect(successfulReads).toBe(1);
 });
 
 test("rejects malformed SSE UTF-8, including split invalid sequences", async () => {
@@ -349,27 +326,22 @@ test("rejects malformed SSE UTF-8, including split invalid sequences", async () 
     ],
   ];
 
-  for (const runtime of runtimes) {
-    for (const chunks of malformedCases) {
-      const error = await executeToEvents(
-        runtime,
-        sseResponseFromChunks(chunks),
-      ).catch((caught) => caught);
-      expect(error).toBeInstanceOf(runtime.ErrorClass);
-      expect(error).toMatchObject({
-        code: "stream_transport_error",
-        status: 200,
-        requestId,
-        shouldRetry: false,
-        cause: { name: "TypeError" },
-      });
-      expect(requireRuntimeError(error, runtime.ErrorClass).message).toBe(
-        "Command stream transport failed.",
-      );
-      expect(requireRuntimeError(error, runtime.ErrorClass).message).not.toContain(
-        "bad",
-      );
-    }
+  for (const chunks of malformedCases) {
+    const error = await executeToEvents(sseResponseFromChunks(chunks)).catch(
+      (caught) => caught,
+    );
+    expect(error).toBeInstanceOf(SourceCailSandboxError);
+    expect(error).toMatchObject({
+      code: "stream_transport_error",
+      status: 200,
+      requestId,
+      shouldRetry: false,
+      cause: { name: "TypeError" },
+    });
+    expect(requireRuntimeError(error).message).toBe(
+      "Command stream transport failed.",
+    );
+    expect(requireRuntimeError(error).message).not.toContain("bad");
   }
 });
 
@@ -394,18 +366,14 @@ test("preserves valid UTF-8 split inside a multibyte SSE field", async () => {
     bytes.slice(markerStart + 3),
   ];
 
-  for (const runtime of runtimes) {
-    expect(
-      await executeToEvents(runtime, sseResponseFromChunks(chunks)),
-    ).toEqual([
-      {
-        type: "error",
-        code: "command_failed",
-        message,
-        requestId,
-      },
-    ]);
-  }
+  expect(await executeToEvents(sseResponseFromChunks(chunks))).toEqual([
+    {
+      type: "error",
+      code: "command_failed",
+      message,
+      requestId,
+    },
+  ]);
 });
 
 test("guards every SSE setup stage and cleans the latest owned stream", async () => {
@@ -416,38 +384,32 @@ test("guards every SSE setup stage and cleans the latest owned stream", async ()
     throw new Error("private diagnostic sink sentinel");
   });
   try {
-    for (const runtime of runtimes) {
-      for (const stage of ["decoder", "parser", "reader"] as const) {
-        for (const cleanup of [
-          "resolve",
-          "reject",
-          "never",
-          "throw",
-        ] as const) {
-          const primary = new Error(`private ${stage} setup sentinel`);
-          const tracked = setupFailureResponse(primary, cleanup, stage);
-          const outcome = await Promise.race([
-            executeToError(runtime, tracked.response),
-            Bun.sleep(50).then(() => "stalled"),
-          ]);
-          expect(outcome, `${runtime.label}/${stage}/${cleanup}`).not.toBe(
-            "stalled",
-          );
-          expect(outcome).toBeInstanceOf(runtime.ErrorClass);
-          expect(outcome).toMatchObject({
-            code: "stream_transport_error",
-            status: 200,
-            requestId,
-            shouldRetry: false,
-            cause: primary,
-          });
-          expect(
-            requireRuntimeError(outcome, runtime.ErrorClass).message,
-          ).not.toContain("sentinel");
-          expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
-          expect(tracked.decodedCancelCalls()).toBe(stage === "parser" ? 1 : 0);
-          expect(tracked.eventsCancelCalls()).toBe(stage === "reader" ? 1 : 0);
-        }
+    for (const stage of ["decoder", "parser", "reader"] as const) {
+      for (const cleanup of [
+        "resolve",
+        "reject",
+        "never",
+        "throw",
+      ] as const) {
+        const primary = new Error(`private ${stage} setup sentinel`);
+        const tracked = setupFailureResponse(primary, cleanup, stage);
+        const outcome = await Promise.race([
+          executeToError(tracked.response),
+          Bun.sleep(50).then(() => "stalled"),
+        ]);
+        expect(outcome, `${stage}/${cleanup}`).not.toBe("stalled");
+        expect(outcome).toBeInstanceOf(SourceCailSandboxError);
+        expect(outcome).toMatchObject({
+          code: "stream_transport_error",
+          status: 200,
+          requestId,
+          shouldRetry: false,
+          cause: primary,
+        });
+        expect(requireRuntimeError(outcome).message).not.toContain("sentinel");
+        expect(tracked.bodyCancelCalls()).toBe(stage === "decoder" ? 1 : 0);
+        expect(tracked.decodedCancelCalls()).toBe(stage === "parser" ? 1 : 0);
+        expect(tracked.eventsCancelCalls()).toBe(stage === "reader" ? 1 : 0);
       }
     }
     await Bun.sleep(0);
@@ -467,38 +429,31 @@ test("SSE reader cleanup cannot stall or replace the primary failure", async () 
     throw new Error("private diagnostic sink sentinel");
   });
   try {
-    for (const runtime of runtimes) {
-      for (const cleanup of ["resolve", "reject", "never", "throw"] as const) {
-        for (const release of ["resolve", "throw"] as const) {
-          const primary = new Error("private reader failure sentinel");
-          const tracked = trackedErroredStream(primary, cleanup, release);
-          const responseBody = new ReadableStream<Uint8Array>();
-          Object.defineProperty(responseBody, "pipeThrough", {
-            value: () => ({
-              pipeThrough: () => tracked.stream,
-            }),
-          });
-          const outcome = await Promise.race([
-            executeToError(
-              runtime,
-              new Response(responseBody, { headers: sseHeaders() }),
-            ),
-            Bun.sleep(50).then(() => "stalled"),
-          ]);
-          expect(outcome, `${runtime.label}/${cleanup}/${release}`).not.toBe(
-            "stalled",
-          );
-          expect(outcome).toBeInstanceOf(runtime.ErrorClass);
-          expect(outcome).toMatchObject({
-            code: "stream_transport_error",
-            cause: primary,
-          });
-          expect(
-            requireRuntimeError(outcome, runtime.ErrorClass).message,
-          ).not.toContain("sentinel");
-          expect(tracked.cancelCalls()).toBe(1);
-          expect(tracked.releaseCalls()).toBe(1);
-        }
+    for (const cleanup of ["resolve", "reject", "never", "throw"] as const) {
+      for (const release of ["resolve", "throw"] as const) {
+        const primary = new Error("private reader failure sentinel");
+        const tracked = trackedErroredStream(primary, cleanup, release);
+        const responseBody = new ReadableStream<Uint8Array>();
+        Object.defineProperty(responseBody, "pipeThrough", {
+          value: () => ({
+            pipeThrough: () => tracked.stream,
+          }),
+        });
+        const outcome = await Promise.race([
+          executeToError(
+            new Response(responseBody, { headers: sseHeaders() }),
+          ),
+          Bun.sleep(50).then(() => "stalled"),
+        ]);
+        expect(outcome, `${cleanup}/${release}`).not.toBe("stalled");
+        expect(outcome).toBeInstanceOf(SourceCailSandboxError);
+        expect(outcome).toMatchObject({
+          code: "stream_transport_error",
+          cause: primary,
+        });
+        expect(requireRuntimeError(outcome).message).not.toContain("sentinel");
+        expect(tracked.cancelCalls()).toBe(1);
+        expect(tracked.releaseCalls()).toBe(1);
       }
     }
     await Bun.sleep(0);
@@ -518,47 +473,43 @@ test("preserves hostile JSON read failures through every cleanup outcome", async
     throw new Error("private diagnostic sink sentinel");
   });
   try {
-    for (const runtime of runtimes) {
-      for (const cleanup of ["resolve", "reject", "never"] as const) {
-        let prototypeReads = 0;
-        const primary = new Proxy(
-          {},
-          {
-            getPrototypeOf() {
-              prototypeReads += 1;
-              throw new Error("private JSON reflection sentinel");
-            },
+    for (const cleanup of ["resolve", "reject", "never"] as const) {
+      let prototypeReads = 0;
+      const primary = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            prototypeReads += 1;
+            throw new Error("private JSON reflection sentinel");
           },
-        );
-        const tracked = trackedErroredStream(primary, cleanup);
-        const client = runtime.create({
-          baseUrl: "https://sandbox.invalid",
-          app: "runtime-classification",
-          fetchImpl: async () => jsonResponse(tracked.stream),
-        });
-        const outcome = await Promise.race([
-          client.running(lease, jwt).catch((error) => error),
-          Bun.sleep(50).then(() => "stalled"),
-        ]);
-        expect(outcome, `${runtime.label}/${cleanup}`).not.toBe("stalled");
-        expect(outcome, `${runtime.label}/${cleanup}`).toBeInstanceOf(
-          runtime.ErrorClass,
-        );
-        expect(outcome).toMatchObject({
-          code: "invalid_response",
-          status: 200,
-          requestId,
-          shouldRetry: false,
-          cause: { name: "ResponseBodyReadError" },
-        });
-        const responseError = requireRuntimeError(outcome, runtime.ErrorClass);
-        expect(requireError(responseError.cause).cause).toBe(primary);
-        expect(responseError.message).not.toContain("sentinel");
-        expect(prototypeReads).toBe(0);
-        expect(tracked.cancelCalls()).toBe(1);
-        expect(tracked.releaseCalls()).toBe(1);
-        expect(tracked.stream.locked).toBeFalse();
-      }
+        },
+      );
+      const tracked = trackedErroredStream(primary, cleanup);
+      const client = createSourceClient({
+        baseUrl: "https://sandbox.invalid",
+        app: "runtime-classification",
+        fetchImpl: async () => jsonResponse(tracked.stream),
+      });
+      const outcome = await Promise.race([
+        client.running(lease, jwt).catch((error) => error),
+        Bun.sleep(50).then(() => "stalled"),
+      ]);
+      expect(outcome, `${cleanup}`).not.toBe("stalled");
+      expect(outcome, `${cleanup}`).toBeInstanceOf(SourceCailSandboxError);
+      expect(outcome).toMatchObject({
+        code: "invalid_response",
+        status: 200,
+        requestId,
+        shouldRetry: false,
+        cause: { name: "ResponseBodyReadError" },
+      });
+      const responseError = requireRuntimeError(outcome);
+      expect(requireError(responseError.cause).cause).toBe(primary);
+      expect(responseError.message).not.toContain("sentinel");
+      expect(prototypeReads).toBe(0);
+      expect(tracked.cancelCalls()).toBe(1);
+      expect(tracked.releaseCalls()).toBe(1);
+      expect(tracked.stream.locked).toBeFalse();
     }
     await Bun.sleep(0);
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(
@@ -579,71 +530,65 @@ test("contains every hostile SSE classifier stage and preserves metadata", async
     throw new Error("private diagnostic sink sentinel");
   });
   try {
-    for (const runtime of runtimes) {
-      let cailPrototypeReads = 0;
-      const cailStage = new Proxy(
-        {},
-        {
-          getPrototypeOf() {
-            cailPrototypeReads += 1;
-            throw new Error("private CailSandboxError reflection sentinel");
-          },
+    let cailPrototypeReads = 0;
+    const cailStage = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          cailPrototypeReads += 1;
+          throw new Error("private CailSandboxError reflection sentinel");
         },
-      );
+      },
+    );
 
-      let abortGetterCalls = 0;
-      const abortStage = {};
-      Object.defineProperty(abortStage, "name", {
-        get() {
-          abortGetterCalls += 1;
-          throw new Error("private AbortError accessor sentinel");
+    let abortGetterCalls = 0;
+    const abortStage = {};
+    Object.defineProperty(abortStage, "name", {
+      get() {
+        abortGetterCalls += 1;
+        throw new Error("private AbortError accessor sentinel");
+      },
+    });
+
+    let parsePrototypeReads = 0;
+    const parseStage = new Proxy(
+      { name: "not-an-abort" },
+      {
+        getPrototypeOf() {
+          parsePrototypeReads += 1;
+          if (parsePrototypeReads === 1) return Object.prototype;
+          throw new Error("private ParseError reflection sentinel");
         },
+      },
+    );
+
+    for (const [stage, primary, cleanup] of [
+      ["cail", cailStage, "never"],
+      ["abort", abortStage, "reject"],
+      ["parse", parseStage, "resolve"],
+    ] as const) {
+      const tracked = sseResponseForError(primary, cleanup);
+      const outcome = await Promise.race([
+        executeToError(tracked.response),
+        Bun.sleep(50).then(() => "stalled"),
+      ]);
+      expect(outcome, `${stage}`).not.toBe("stalled");
+      expect(outcome, `${stage}`).toBeInstanceOf(SourceCailSandboxError);
+      expect(outcome).toMatchObject({
+        code: "stream_transport_error",
+        status: 200,
+        requestId,
+        shouldRetry: false,
+        cause: primary,
       });
-
-      let parsePrototypeReads = 0;
-      const parseStage = new Proxy(
-        { name: "not-an-abort" },
-        {
-          getPrototypeOf() {
-            parsePrototypeReads += 1;
-            if (parsePrototypeReads === 1) return Object.prototype;
-            throw new Error("private ParseError reflection sentinel");
-          },
-        },
-      );
-
-      for (const [stage, primary, cleanup] of [
-        ["cail", cailStage, "never"],
-        ["abort", abortStage, "reject"],
-        ["parse", parseStage, "resolve"],
-      ] as const) {
-        const tracked = sseResponseForError(primary, cleanup);
-        const outcome = await Promise.race([
-          executeToError(runtime, tracked.response),
-          Bun.sleep(50).then(() => "stalled"),
-        ]);
-        expect(outcome, `${runtime.label}/${stage}`).not.toBe("stalled");
-        expect(outcome, `${runtime.label}/${stage}`).toBeInstanceOf(
-          runtime.ErrorClass,
-        );
-        expect(outcome).toMatchObject({
-          code: "stream_transport_error",
-          status: 200,
-          requestId,
-          shouldRetry: false,
-          cause: primary,
-        });
-        expect(
-          requireRuntimeError(outcome, runtime.ErrorClass).message,
-        ).not.toContain("sentinel");
-        expect(tracked.cancelCalls()).toBe(1);
-        expect(tracked.releaseCalls()).toBe(1);
-      }
-
-      expect(cailPrototypeReads).toBe(0);
-      expect(abortGetterCalls).toBe(0);
-      expect(parsePrototypeReads).toBe(0);
+      expect(requireRuntimeError(outcome).message).not.toContain("sentinel");
+      expect(tracked.cancelCalls()).toBe(1);
+      expect(tracked.releaseCalls()).toBe(1);
     }
+
+    expect(cailPrototypeReads).toBe(0);
+    expect(abortGetterCalls).toBe(0);
+    expect(parsePrototypeReads).toBe(0);
     await Bun.sleep(0);
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("sentinel");
     expect(unhandled).toEqual([]);
@@ -654,206 +599,192 @@ test("contains every hostile SSE classifier stage and preserves metadata", async
 });
 
 test("retains genuine typed, AbortError, TimeoutError, and ParseError controls", async () => {
-  for (const runtime of runtimes) {
-    const typed = await executeToError(
-      runtime,
-      new Response("event: unknown\ndata: {}\n\n", {
-        headers: {
-          "content-type": "text/event-stream",
-          "x-cail-request-id": requestId,
-          "x-request-id": requestId,
-          "x-should-retry": "false",
-        },
-      }),
-    );
-    expect(typed).toBeInstanceOf(runtime.ErrorClass);
-    expect(typed).toMatchObject({ code: "invalid_stream", requestId });
+  const typed = await executeToError(
+    new Response("event: unknown\ndata: {}\n\n", {
+      headers: {
+        "content-type": "text/event-stream",
+        "x-cail-request-id": requestId,
+        "x-request-id": requestId,
+        "x-should-retry": "false",
+      },
+    }),
+  );
+  expect(typed).toBeInstanceOf(SourceCailSandboxError);
+  expect(typed).toMatchObject({ code: "invalid_stream", requestId });
 
-    for (const name of ["AbortError", "TimeoutError"] as const) {
-      const primary = new DOMException("authoritative cancellation", name);
-      const tracked = sseResponseForError(primary, "resolve");
-      const outcome = await executeToError(runtime, tracked.response);
-      expect(outcome, `${runtime.label}/${name}`).toBe(primary);
-      expect(tracked.cancelCalls()).toBe(1);
-      expect(tracked.releaseCalls()).toBe(1);
-    }
-
-    const parseError = await executeToError(
-      runtime,
-      new Response("retry: nope\n\n", {
-        headers: {
-          "content-type": "text/event-stream",
-          "x-cail-request-id": requestId,
-          "x-request-id": requestId,
-          "x-should-retry": "false",
-        },
-      }),
-    );
-    expect(parseError).toBeInstanceOf(runtime.ErrorClass);
-    expect(parseError).toMatchObject({
-      code: "invalid_stream",
-      requestId,
-      cause: { name: "ParseError" },
-    });
-    expect(
-      requireRuntimeError(parseError, runtime.ErrorClass).cause,
-    ).toBeInstanceOf(ParseError);
+  for (const name of ["AbortError", "TimeoutError"] as const) {
+    const primary = new DOMException("authoritative cancellation", name);
+    const tracked = sseResponseForError(primary, "resolve");
+    const outcome = await executeToError(tracked.response);
+    expect(outcome, name).toBe(primary);
+    expect(tracked.cancelCalls()).toBe(1);
+    expect(tracked.releaseCalls()).toBe(1);
   }
+
+  const parseError = await executeToError(
+    new Response("retry: nope\n\n", {
+      headers: {
+        "content-type": "text/event-stream",
+        "x-cail-request-id": requestId,
+        "x-request-id": requestId,
+        "x-should-retry": "false",
+      },
+    }),
+  );
+  expect(parseError).toBeInstanceOf(SourceCailSandboxError);
+  expect(parseError).toMatchObject({
+    code: "invalid_stream",
+    requestId,
+    cause: { name: "ParseError" },
+  });
+  expect(requireRuntimeError(parseError).cause).toBeInstanceOf(ParseError);
 });
 
 test("rejects forged AbortError, TimeoutError, and ParseError authority", async () => {
-  for (const runtime of runtimes) {
-    const forged: unknown[] = [];
-    for (const name of ["AbortError", "TimeoutError"] as const) {
-      const error = new Error("private forged cancellation sentinel");
-      error.name = name;
-      forged.push(error);
-    }
-
-    const forgedDomException = Object.create(DOMException.prototype);
-    Object.defineProperty(forgedDomException, "name", {
-      value: "AbortError",
-    });
-    forged.push(forgedDomException);
-
-    forged.push(
-      new ParseError("private external parser sentinel", {
-        type: "invalid-retry",
-        value: "nope",
-        line: "retry: nope",
-      }),
-    );
-    forged.push(
-      Object.assign(Object.create(ParseError.prototype), {
-        name: "ParseError",
-        type: "invalid-retry",
-      }),
-    );
-
-    for (const primary of forged) {
-      const tracked = sseResponseForError(primary, "resolve");
-      const error = await executeToError(runtime, tracked.response);
-      expect(error).toBeInstanceOf(runtime.ErrorClass);
-      expect(error).toMatchObject({
-        code: "stream_transport_error",
-        status: 200,
-        requestId,
-        shouldRetry: false,
-      });
-      const sandboxError = requireRuntimeError(error, runtime.ErrorClass);
-      expect(sandboxError.cause).toBe(primary);
-      expect(sandboxError.message).not.toContain("sentinel");
-      expect(tracked.cancelCalls()).toBe(1);
-      expect(tracked.releaseCalls()).toBe(1);
-    }
+  const forged: unknown[] = [];
+  for (const name of ["AbortError", "TimeoutError"] as const) {
+    const error = new Error("private forged cancellation sentinel");
+    error.name = name;
+    forged.push(error);
   }
-});
 
-test("keeps private stream transport causes exact and non-enumerable", async () => {
-  for (const runtime of runtimes) {
-    const primary = {
-      authorization: "Bearer private-stream-token",
-      responseBody: "private student response body",
-    };
+  const forgedDomException = Object.create(DOMException.prototype);
+  Object.defineProperty(forgedDomException, "name", {
+    value: "AbortError",
+  });
+  forged.push(forgedDomException);
+
+  forged.push(
+    new ParseError("private external parser sentinel", {
+      type: "invalid-retry",
+      value: "nope",
+      line: "retry: nope",
+    }),
+  );
+  forged.push(
+    Object.assign(Object.create(ParseError.prototype), {
+      name: "ParseError",
+      type: "invalid-retry",
+    }),
+  );
+
+  for (const primary of forged) {
     const tracked = sseResponseForError(primary, "resolve");
-    const error = await executeToError(runtime, tracked.response);
-
-    expect(error).toBeInstanceOf(runtime.ErrorClass);
+    const error = await executeToError(tracked.response);
+    expect(error).toBeInstanceOf(SourceCailSandboxError);
     expect(error).toMatchObject({
       code: "stream_transport_error",
       status: 200,
       requestId,
       shouldRetry: false,
     });
-    expect(requireRuntimeError(error, runtime.ErrorClass).cause).toBe(primary);
-    expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
-      value: primary,
-      enumerable: false,
-      writable: true,
-      configurable: true,
-    });
-    expect(JSON.stringify(error)).not.toContain("private-stream-token");
-    expect(JSON.stringify(error)).not.toContain(
-      "private student response body",
-    );
+    const sandboxError = requireRuntimeError(error);
+    expect(sandboxError.cause).toBe(primary);
+    expect(sandboxError.message).not.toContain("sentinel");
     expect(tracked.cancelCalls()).toBe(1);
     expect(tracked.releaseCalls()).toBe(1);
   }
 });
 
-test("contains hostile correlation failures before fetch", async () => {
-  for (const runtime of runtimes) {
-    let fetchCalls = 0;
-    let rejectedPrototypeReads = 0;
-    const rejected = new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          rejectedPrototypeReads += 1;
-          throw new Error("private correlation reflection sentinel");
-        },
-      },
-    );
-    const correlation = new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw rejected;
-        },
-      },
-    );
-    const client = runtime.create({
-      baseUrl: "https://sandbox.invalid",
-      app: "runtime-classification",
-      fetchImpl: async () => {
-        fetchCalls += 1;
-        return Response.json({ running: true });
-      },
-    });
-    // SAFETY: The proxy is deliberately not a correlation object; this test
-    // crosses the static boundary to verify contained hostile reflection.
-    const error = await client
-      .running(lease, jwt, {
-        correlation: correlation as never,
-      })
-      .catch((caught) => caught);
-    expect(error).toBeInstanceOf(runtime.ErrorClass);
-    expect(error).toMatchObject({
-      code: "invalid_correlation",
-      status: 0,
-    });
-    expect(error.message).toBe("Invalid CAIL correlation object.");
-    expect(error.message).not.toContain("sentinel");
-    expect(rejectedPrototypeReads).toBe(0);
-    expect(fetchCalls).toBe(0);
+test("keeps private stream transport causes exact and non-enumerable", async () => {
+  const primary = {
+    authorization: "Bearer private-stream-token",
+    responseBody: "private student response body",
+  };
+  const tracked = sseResponseForError(primary, "resolve");
+  const error = await executeToError(tracked.response);
 
-    const privateMessageError = new TypeError(
-      "private correlation message sentinel",
-    );
-    const forgedCorrelation = new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw privateMessageError;
-        },
+  expect(error).toBeInstanceOf(SourceCailSandboxError);
+  expect(error).toMatchObject({
+    code: "stream_transport_error",
+    status: 200,
+    requestId,
+    shouldRetry: false,
+  });
+  expect(requireRuntimeError(error).cause).toBe(primary);
+  expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
+    value: primary,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  expect(JSON.stringify(error)).not.toContain("private-stream-token");
+  expect(JSON.stringify(error)).not.toContain("private student response body");
+  expect(tracked.cancelCalls()).toBe(1);
+  expect(tracked.releaseCalls()).toBe(1);
+});
+
+test("contains hostile correlation failures before fetch", async () => {
+  let fetchCalls = 0;
+  let rejectedPrototypeReads = 0;
+  const rejected = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        rejectedPrototypeReads += 1;
+        throw new Error("private correlation reflection sentinel");
       },
-    );
-    // SAFETY: The proxy is deliberately not a correlation object; this test
-    // crosses the static boundary to verify a single safe public error.
-    const forgedError = await client
-      .running(lease, jwt, {
-        correlation: forgedCorrelation as never,
-      })
-      .catch((caught) => caught);
-    expect(forgedError).toBeInstanceOf(runtime.ErrorClass);
-    expect(forgedError).toMatchObject({
-      code: "invalid_correlation",
-      status: 0,
-    });
-    expect(forgedError.message).toBe("Invalid CAIL correlation object.");
-    expect(forgedError.message).not.toContain("sentinel");
-    expect(fetchCalls).toBe(0);
-  }
+    },
+  );
+  const correlation = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw rejected;
+      },
+    },
+  );
+  const client = createSourceClient({
+    baseUrl: "https://sandbox.invalid",
+    app: "runtime-classification",
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return Response.json({ running: true });
+    },
+  });
+  // SAFETY: The proxy is deliberately not a correlation object; this test
+  // crosses the static boundary to verify contained hostile reflection.
+  const error = await client
+    .running(lease, jwt, {
+      correlation: correlation as never,
+    })
+    .catch((caught) => caught);
+  expect(error).toBeInstanceOf(SourceCailSandboxError);
+  expect(error).toMatchObject({
+    code: "invalid_correlation",
+    status: 0,
+  });
+  expect(error.message).toBe("Invalid CAIL correlation object.");
+  expect(error.message).not.toContain("sentinel");
+  expect(rejectedPrototypeReads).toBe(0);
+  expect(fetchCalls).toBe(0);
+
+  const privateMessageError = new TypeError(
+    "private correlation message sentinel",
+  );
+  const forgedCorrelation = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw privateMessageError;
+      },
+    },
+  );
+  // SAFETY: The proxy is deliberately not a correlation object; this test
+  // crosses the static boundary to verify a single safe public error.
+  const forgedError = await client
+    .running(lease, jwt, {
+      correlation: forgedCorrelation as never,
+    })
+    .catch((caught) => caught);
+  expect(forgedError).toBeInstanceOf(SourceCailSandboxError);
+  expect(forgedError).toMatchObject({
+    code: "invalid_correlation",
+    status: 0,
+  });
+  expect(forgedError.message).toBe("Invalid CAIL correlation object.");
+  expect(forgedError.message).not.toContain("sentinel");
+  expect(fetchCalls).toBe(0);
 });
 
 test("uses one safe correlation validation message", async () => {
@@ -880,23 +811,21 @@ test("uses one safe correlation validation message", async () => {
       "Invalid CAIL correlation object.",
     ],
   ] as const;
-  for (const runtime of runtimes) {
-    for (const [correlation, message] of cases) {
-      const client = runtime.create({
-        baseUrl: "https://sandbox.invalid",
-        app: "runtime-classification",
-        fetchImpl: async () => Response.json({ running: true }),
-      });
-      // SAFETY: Each table entry is deliberately malformed and crosses the
-      // static boundary solely to exercise correlation validation.
-      const error = await client
-        .running(lease, jwt, {
-          correlation: correlation as never,
-        })
-        .catch((caught) => caught);
-      expect(error).toBeInstanceOf(runtime.ErrorClass);
-      expect(error).toMatchObject({ code: "invalid_correlation", status: 0 });
-      expect(error.message).toBe(message);
-    }
+  for (const [correlation, message] of cases) {
+    const client = createSourceClient({
+      baseUrl: "https://sandbox.invalid",
+      app: "runtime-classification",
+      fetchImpl: async () => Response.json({ running: true }),
+    });
+    // SAFETY: Each table entry is deliberately malformed and crosses the
+    // static boundary solely to exercise correlation validation.
+    const error = await client
+      .running(lease, jwt, {
+        correlation: correlation as never,
+      })
+      .catch((caught) => caught);
+    expect(error).toBeInstanceOf(SourceCailSandboxError);
+    expect(error).toMatchObject({ code: "invalid_correlation", status: 0 });
+    expect(error.message).toBe(message);
   }
 });
