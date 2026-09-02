@@ -27,6 +27,14 @@ The service verifies identity and owns subject/app isolation, lease state,
 execution policy, metering, settlement, and durable state. The Computer-backed
 service owns each lease's Workspace and container runtime.
 
+## Public API
+
+Version 1.0.0 exports the sandbox client API and the `CailCorrelation` type.
+The former convenience re-exports `CAIL_REQUEST_ID_HEADER`,
+`TRACEPARENT_HEADER`, `correlationFromHeaders`, `outboundCorrelationHeaders`,
+and `CailHeadersLike` were removed. Backend callers that use those logging and
+correlation utilities must import them directly from `@cuny-ai-lab/cail-log`.
+
 ## Example
 
 ```ts

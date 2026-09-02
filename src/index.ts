@@ -5,17 +5,12 @@ import {
 } from "@cuny-ai-lab/cail-log";
 import {
   EventSourceParserStream,
+  ParseError,
   type EventSourceMessage,
 } from "eventsource-parser/stream";
 import { z } from "zod";
 
-export {
-  CAIL_REQUEST_ID_HEADER,
-  correlationFromHeaders,
-  outboundCorrelationHeaders,
-  TRACEPARENT_HEADER,
-} from "@cuny-ai-lab/cail-log";
-export type { CailCorrelation, CailHeadersLike } from "@cuny-ai-lab/cail-log";
+export type { CailCorrelation } from "@cuny-ai-lab/cail-log";
 
 export type CailSandboxCredential = {
   kind: "jwt";
@@ -56,8 +51,6 @@ export type CommandTerminalEvent =
   | { type: "error"; code: string; message: string; requestId: string };
 
 const responseSignals = new WeakMap<Response, AbortSignal | undefined>();
-const liveResponseBodyReadErrors = new WeakSet<object>();
-const liveEventSourceParseErrors = new WeakSet<object>();
 
 type CailErrorDetails = Record<string, string | number | boolean | null>;
 
@@ -199,10 +192,6 @@ const MAX_JSON_RESPONSE_BYTES = 65_536;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const CANONICAL_BASE64 =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(
-  DOMException.prototype,
-  "name",
-)?.get;
 const ERROR_TYPES = new Set([
   "invalid_request_error",
   "authentication_error",
@@ -583,7 +572,13 @@ async function parseSuccessRecord(
     body = await readBoundedJson(response);
   } catch (cause) {
     const signal = responseSignals.get(response);
-    if (isSignalReason(cause, signal) || isAbortError(cause)) throw cause;
+    if (
+      isSignalReason(cause, signal) ||
+      (cause instanceof Error &&
+        (cause.name === "AbortError" || cause.name === "TimeoutError"))
+    ) {
+      throw cause;
+    }
     throw responseError(
       response,
       "invalid_response",
@@ -603,7 +598,6 @@ class ResponseBodyReadError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ResponseBodyReadError";
-    liveResponseBodyReadErrors.add(this);
   }
 }
 
@@ -677,10 +671,14 @@ async function readBoundedJson(
       text += decoder.decode(value, { stream: true });
     }
   } catch (cause) {
-    // SAFETY: WeakSet#has returns false for primitives without inspecting an
-    // object's prototype, which preserves hostile thrown values verbatim.
-    if (liveResponseBodyReadErrors.has(cause as object)) throw cause;
-    if (isSignalReason(cause, signal) || isAbortError(cause)) throw cause;
+    if (cause instanceof ResponseBodyReadError) throw cause;
+    if (
+      isSignalReason(cause, signal) ||
+      (cause instanceof Error &&
+        (cause.name === "AbortError" || cause.name === "TimeoutError"))
+    ) {
+      throw cause;
+    }
     requestCancel(cause);
     throw new ResponseBodyReadError(
       "Sandbox JSON response could not be read.",
@@ -698,6 +696,13 @@ async function readBoundedJson(
       { cause },
     );
   }
+}
+
+function daysInMonth(year: number, month: number): number | undefined {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][
+    month - 1
+  ];
 }
 
 function isDateTime(value: string): boolean {
@@ -721,26 +726,11 @@ function isDateTime(value: string): boolean {
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [
-    31,
-    leap ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
+  const maximumDay = daysInMonth(year, month);
   return (
-    month >= 1 &&
-    month <= 12 &&
+    maximumDay !== undefined &&
     day >= 1 &&
-    day <= daysInMonth[month - 1]! &&
+    day <= maximumDay &&
     Number(hourText) <= 23 &&
     Number(minuteText) <= 59 &&
     Number(secondText) <= 59 &&
@@ -755,24 +745,8 @@ function isFullDate(value: string): boolean {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [
-    31,
-    leap ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
-  return (
-    month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]!
-  );
+  const maximumDay = daysInMonth(year, month);
+  return maximumDay !== undefined && day >= 1 && day <= maximumDay;
 }
 
 const DATE_TIME_SCHEMA = z.string().refine(isDateTime);
@@ -861,15 +835,21 @@ const COMMAND_ERROR_SCHEMA = z
   })
   .strict();
 
-async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
-  const message = "Sandbox lifecycle response was malformed.";
-  const parsed = LIFECYCLE_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
+async function parseStrict<T>(
+  response: Response,
+  schema: z.ZodType<T>,
+  message: string,
+): Promise<T> {
+  const parsed = schema.safeParse(await parseSuccessRecord(response, message));
   if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
-  const body = parsed.data;
+  return parsed.data;
+}
+
+async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
+  const message = "Sandbox lifecycle response was malformed.";
+  const body = await parseStrict(response, LIFECYCLE_SCHEMA, message);
   return {
     id: body.id,
     state: "active",
@@ -885,13 +865,7 @@ async function parseOperation(
   operationId: string,
 ): Promise<SandboxOperation> {
   const message = "Sandbox operation response was malformed.";
-  const parsed = OPERATION_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, OPERATION_SCHEMA, message);
   return {
     id: body.id,
     operationId,
@@ -903,13 +877,7 @@ async function parseOperation(
 
 async function parseRunning(response: Response): Promise<SandboxRunning> {
   const message = "Sandbox status response was malformed.";
-  const parsed = RUNNING_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, RUNNING_SCHEMA, message);
   return {
     running: body.running,
     state: "active",
@@ -920,13 +888,7 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
 
 async function parseUsage(response: Response): Promise<SandboxUsage> {
   const message = "Sandbox usage response was malformed.";
-  const parsed = USAGE_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, USAGE_SCHEMA, message);
   return {
     period: body.period,
     unit: "mib_milliseconds",
@@ -943,13 +905,10 @@ async function parseSettlement(
   expectedLeaseId: string,
 ): Promise<SandboxSettlement> {
   const message = "Sandbox settlement response was malformed.";
-  const parsed = SETTLEMENT_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success || parsed.data.lease_id !== expectedLeaseId) {
+  const body = await parseStrict(response, SETTLEMENT_SCHEMA, message);
+  if (body.lease_id !== expectedLeaseId) {
     throw responseError(response, "invalid_response", message);
   }
-  const body = parsed.data;
   return {
     leaseId: body.lease_id,
     periodStart: body.period_start,
@@ -993,7 +952,13 @@ async function parseError(response: Response): Promise<CailSandboxError> {
     body = await readBoundedJson(response);
   } catch (cause) {
     const signal = responseSignals.get(response);
-    if (isSignalReason(cause, signal) || isAbortError(cause)) throw cause;
+    if (
+      isSignalReason(cause, signal) ||
+      (cause instanceof Error &&
+        (cause.name === "AbortError" || cause.name === "TimeoutError"))
+    ) {
+      throw cause;
+    }
     return new CailSandboxError(
       "unknown_error",
       `Sandbox request failed with HTTP ${response.status}.`,
@@ -1395,22 +1360,6 @@ export function createCailSandboxClient(
   };
 }
 
-function isAbortError(cause: unknown): boolean {
-  if (DOM_EXCEPTION_NAME_GETTER === undefined) return false;
-  try {
-    const name = DOM_EXCEPTION_NAME_GETTER.call(cause);
-    return name === "AbortError" || name === "TimeoutError";
-  } catch {
-    return false;
-  }
-}
-
-function isEventSourceParseError(cause: unknown): boolean {
-  // SAFETY: WeakSet#has returns false for primitives and checks object identity
-  // without invoking a hostile value's prototype traps.
-  return liveEventSourceParseErrors.has(cause as object);
-}
-
 // The service contract declares sandbox/session ids as format: uuid; at
 // minimum reject anything that could alter the request path or headers.
 function encodeId(id: string) {
@@ -1484,10 +1433,7 @@ async function* parseCommandEvents(
     const events = decoded.pipeThrough(
       new EventSourceParserStream({
         maxBufferSize: 2 * 1024 * 1024,
-        onError(error) {
-          liveEventSourceParseErrors.add(error);
-          throw error;
-        },
+        onError: "terminate",
       }),
     );
     cleanupStream = events;
@@ -1593,8 +1539,14 @@ async function* parseCommandEvents(
       throw error;
     }
     // Deliberate abort is not a framing failure — surface it unchanged.
-    if (isSignalReason(error, signal) || isAbortError(error)) throw error;
-    if (isEventSourceParseError(error)) {
+    if (
+      isSignalReason(error, signal) ||
+      (error instanceof Error &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
+      throw error;
+    }
+    if (error instanceof ParseError) {
       throw invalidStream("Command stream framing was invalid.", error);
     }
     throw responseError(

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { z } from "zod";
 import {
   CailSandboxError,
-  correlationFromHeaders,
   createCailSandboxClient,
   type CailCorrelation,
 } from "../src/index";
@@ -307,27 +306,6 @@ test("fails closed on malformed usage and settlement responses", async () => {
   await expect(client.settlement(lease.id, jwt)).rejects.toMatchObject({
     code: "invalid_response",
   });
-});
-
-test("adopts only the canonical cail-log request-id header", () => {
-  const canonical = "b5213d52-04cc-4b89-a5bd-f1db8884a34e";
-  const alias = "916fc59d-d79a-40d5-a822-4e096d85bd01";
-  expect(
-    correlationFromHeaders(
-      new Headers({
-        "x-cail-request-id": canonical,
-        "x-request-id": alias,
-      }),
-    ).request_id,
-  ).toBe(canonical);
-
-  const aliasOnly = correlationFromHeaders(
-    new Headers({ "x-request-id": alias }),
-  ).request_id;
-  expect(aliasOnly).not.toBe(alias);
-  expect(aliasOnly).toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
 });
 
 test("binds session, file, exec, and cleanup calls to one operation capability", async () => {
