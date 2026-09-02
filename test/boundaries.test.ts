@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, it, spyOn, test } from "bun:test";
 import {
   CailSandboxError,
   createCailSandboxClient,
@@ -270,6 +270,90 @@ test("rejects a non-UUID command error request_id", async () => {
   });
 });
 
+it("accepts lowercase UUIDv4/v7 request IDs and rejects uppercase IDs for JSON and SSE", async () => {
+  const accepted = [
+    responseRequestId,
+    "018f47a2-6b5f-7cc0-8f31-9b8e1ad2c3d4",
+  ];
+  const rejected = ["018F47A2-6B5F-7CC0-8F31-9B8E1AD2C3D4"];
+
+  for (const requestId of accepted) {
+    const headers = {
+      ...jsonHeaders,
+      "x-cail-request-id": requestId,
+      "x-request-id": requestId,
+    };
+    const result = await client(async () =>
+      Response.json(
+        {
+          running: true,
+          state: "active",
+          expires_at: operation.expiresAt,
+          lease_generation: 1,
+        },
+        { headers },
+      ),
+    ).running(lease, jwt);
+    expect(result.running).toBe(true);
+
+    const events = await client(
+      async () =>
+        new Response(
+          `event: error\ndata: ${JSON.stringify({
+            code: "command_failed",
+            message: "No.",
+            request_id: requestId,
+          })}\n\n`,
+          {
+            headers: {
+              ...sseHeaders,
+              "x-cail-request-id": requestId,
+              "x-request-id": requestId,
+            },
+          },
+        ),
+    ).exec(lease, operation, "true", jwt);
+    const output = [];
+    for await (const event of events) output.push(event);
+    expect(output).toEqual([
+      { type: "error", code: "command_failed", message: "No.", requestId },
+    ]);
+  }
+
+  for (const requestId of rejected) {
+    const headers = {
+      ...jsonHeaders,
+      "x-cail-request-id": requestId,
+      "x-request-id": requestId,
+    };
+    await expect(
+      client(async () =>
+        Response.json(
+          {
+            running: true,
+            state: "active",
+            expires_at: operation.expiresAt,
+            lease_generation: 1,
+          },
+          { headers },
+        ),
+      ).running(lease, jwt),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+
+    const error = await executeToError(
+      new Response(
+        `event: error\ndata: ${JSON.stringify({
+          code: "command_failed",
+          message: "No.",
+          request_id: requestId,
+        })}\n\n`,
+        { headers: sseHeaders },
+      ),
+    );
+    expect(error).toMatchObject({ code: "invalid_stream" });
+  }
+});
+
 test("rejects noncanonical RFC 4648 output encodings", async () => {
   for (const data of ["aGVsbG8", "aGVs bG8=", "Zh=="]) {
     const error = await execError(
@@ -370,6 +454,33 @@ test("rejects and cancels a declared oversized JSON response", async () => {
     cause: { name: "ResponseBodyReadError" },
   });
   expect(cancelled).toBe(true);
+});
+
+it("forwards chunked JSON overflow cancellation and unlocks the body", async () => {
+  let cancelReason: unknown;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(maxJsonBytes));
+      controller.enqueue(new Uint8Array([1]));
+    },
+    cancel(reason) {
+      cancelReason = reason;
+      return new Promise<void>(() => undefined);
+    },
+  });
+
+  const error = await client(async () =>
+    new Response(body, { headers: { "content-type": "application/json" } }),
+  )
+    .running(lease, jwt)
+    .catch((caught) => caught);
+
+  expect(error).toMatchObject({
+    code: "invalid_response",
+    cause: { name: "ResponseBodyReadError" },
+  });
+  expect(cancelReason).toBe(error.cause);
+  expect(body.locked).toBe(false);
 });
 
 test("rejects malformed UTF-8 and cancels the still-open response", async () => {
@@ -594,6 +705,35 @@ describe.each(cleanupModes)("%s cleanup", (cleanup) => {
   });
 });
 
+it("emits a redacted reader-cancellation cleanup diagnostic", async () => {
+  const primary = new Error("Bearer private-identity-token");
+  const tracked = erroredStream(primary, "reject");
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const error = await executeToError(sseErrorResponse(tracked.stream));
+    await Bun.sleep(0);
+
+    expect(error).toMatchObject({ code: "stream_transport_error", cause: primary });
+    expect(diagnostic).toHaveBeenCalledWith({
+      event: "cail_sandbox_client.response_cleanup_failed",
+      error: "response_cleanup_failed",
+      operation: "reader_cancel",
+    });
+    const serialized = JSON.stringify(diagnostic.mock.calls);
+    for (const secret of [
+      jwt.token,
+      lease.leaseCapability,
+      operation.operationCapability,
+      primary.message,
+      "private cleanup sentinel",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  } finally {
+    diagnostic.mockRestore();
+  }
+});
+
 test("does not replace a read failure when releasing its reader throws", async () => {
   const primary = new Error("private reader failure sentinel");
   const tracked = erroredStream(primary, "resolve", "throw");
@@ -664,6 +804,51 @@ test("observes a late provider rejection after caller cancellation", async () =>
   }
 });
 
+it("promptly surfaces caller abort from an in-flight SSE read when cancellation stalls", async () => {
+  const controller = new AbortController();
+  const stalled = customStalledReader<ReadableStreamReadResult<Uint8Array>>();
+  const response = sseErrorResponse(stalled.body);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (cause: unknown) => unhandled.push(cause);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const events = await client(async () => response).exec(
+      lease,
+      operation,
+      "true",
+      jwt,
+      { signal: controller.signal },
+    );
+    const pending = (async () => {
+      for await (const event of events) void event;
+    })();
+    await Bun.sleep(0);
+    const reason = new DOMException("caller cancelled", "AbortError");
+    controller.abort(reason);
+
+    const outcome = await Promise.race([
+      pending.catch((error) => error),
+      Bun.sleep(50).then(() => "stalled"),
+    ]);
+    await Bun.sleep(0);
+    expect({
+      outcome,
+      cancel: stalled.cancelCalls(),
+      cancelReason: stalled.cancelReason(),
+      release: stalled.releaseCalls(),
+      unhandled,
+    }).toEqual({
+      outcome: reason,
+      cancel: 1,
+      cancelReason: reason,
+      release: 1,
+      unhandled: [],
+    });
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("caller cancellation unlocks a native JSON body without awaiting cleanup", async () => {
   const controller = new AbortController();
   const stalled = nativeStalledBody("never");
@@ -709,6 +894,18 @@ test("default timeout escapes a native SSE pipeline with throwing cleanup", asyn
     });
   } finally {
     diagnostic.mockRestore();
+  }
+});
+
+it("rethrows genuine body AbortError and TimeoutError instances verbatim", async () => {
+  for (const name of ["AbortError", "TimeoutError"] as const) {
+    const primary = new DOMException("body cancellation", name);
+    const tracked = erroredStream(primary, "resolve");
+    const outcome = await executeToError(sseErrorResponse(tracked.stream));
+
+    expect(outcome).toBe(primary);
+    expect(tracked.cancelCalls()).toBe(1);
+    expect(tracked.releaseCalls()).toBe(1);
   }
 });
 
@@ -798,6 +995,32 @@ test("reads the SSE response body accessor once", async () => {
     },
     reads: 1,
   });
+});
+
+it("keeps stream transport causes non-enumerable and out of JSON", async () => {
+  const primary = {
+    authorization: "Bearer private-stream-token",
+    identity: "private student identity",
+  };
+  const tracked = erroredStream(primary, "resolve");
+  const error = await executeToError(sseErrorResponse(tracked.stream));
+
+  expect(error).toMatchObject({
+    code: "stream_transport_error",
+    requestId: responseRequestId,
+    cause: primary,
+  });
+  expect(Object.getOwnPropertyDescriptor(error, "cause")).toMatchObject({
+    value: primary,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  const serialized = JSON.stringify(error);
+  expect(serialized).not.toContain(primary.authorization);
+  expect(serialized).not.toContain(primary.identity);
+  expect(tracked.cancelCalls()).toBe(1);
+  expect(tracked.releaseCalls()).toBe(1);
 });
 
 test("contains correlation reflection failures before fetch", async () => {
