@@ -700,6 +700,13 @@ async function readBoundedJson(
   }
 }
 
+function daysInMonth(year: number, month: number): number | undefined {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][
+    month - 1
+  ];
+}
+
 function isDateTime(value: string): boolean {
   const match =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
@@ -721,26 +728,11 @@ function isDateTime(value: string): boolean {
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [
-    31,
-    leap ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
+  const maximumDay = daysInMonth(year, month);
   return (
-    month >= 1 &&
-    month <= 12 &&
+    maximumDay !== undefined &&
     day >= 1 &&
-    day <= daysInMonth[month - 1]! &&
+    day <= maximumDay &&
     Number(hourText) <= 23 &&
     Number(minuteText) <= 59 &&
     Number(secondText) <= 59 &&
@@ -755,24 +747,8 @@ function isFullDate(value: string): boolean {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [
-    31,
-    leap ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
-  return (
-    month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]!
-  );
+  const maximumDay = daysInMonth(year, month);
+  return maximumDay !== undefined && day >= 1 && day <= maximumDay;
 }
 
 const DATE_TIME_SCHEMA = z.string().refine(isDateTime);
@@ -861,15 +837,21 @@ const COMMAND_ERROR_SCHEMA = z
   })
   .strict();
 
-async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
-  const message = "Sandbox lifecycle response was malformed.";
-  const parsed = LIFECYCLE_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
+async function parseStrict<T>(
+  response: Response,
+  schema: z.ZodType<T>,
+  message: string,
+): Promise<T> {
+  const parsed = schema.safeParse(await parseSuccessRecord(response, message));
   if (!parsed.success) {
     throw responseError(response, "invalid_response", message);
   }
-  const body = parsed.data;
+  return parsed.data;
+}
+
+async function parseLifecycle(response: Response): Promise<SandboxLifecycle> {
+  const message = "Sandbox lifecycle response was malformed.";
+  const body = await parseStrict(response, LIFECYCLE_SCHEMA, message);
   return {
     id: body.id,
     state: "active",
@@ -885,13 +867,7 @@ async function parseOperation(
   operationId: string,
 ): Promise<SandboxOperation> {
   const message = "Sandbox operation response was malformed.";
-  const parsed = OPERATION_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, OPERATION_SCHEMA, message);
   return {
     id: body.id,
     operationId,
@@ -903,13 +879,7 @@ async function parseOperation(
 
 async function parseRunning(response: Response): Promise<SandboxRunning> {
   const message = "Sandbox status response was malformed.";
-  const parsed = RUNNING_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, RUNNING_SCHEMA, message);
   return {
     running: body.running,
     state: "active",
@@ -920,13 +890,7 @@ async function parseRunning(response: Response): Promise<SandboxRunning> {
 
 async function parseUsage(response: Response): Promise<SandboxUsage> {
   const message = "Sandbox usage response was malformed.";
-  const parsed = USAGE_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success) {
-    throw responseError(response, "invalid_response", message);
-  }
-  const body = parsed.data;
+  const body = await parseStrict(response, USAGE_SCHEMA, message);
   return {
     period: body.period,
     unit: "mib_milliseconds",
@@ -943,13 +907,10 @@ async function parseSettlement(
   expectedLeaseId: string,
 ): Promise<SandboxSettlement> {
   const message = "Sandbox settlement response was malformed.";
-  const parsed = SETTLEMENT_SCHEMA.safeParse(
-    await parseSuccessRecord(response, message),
-  );
-  if (!parsed.success || parsed.data.lease_id !== expectedLeaseId) {
+  const body = await parseStrict(response, SETTLEMENT_SCHEMA, message);
+  if (body.lease_id !== expectedLeaseId) {
     throw responseError(response, "invalid_response", message);
   }
-  const body = parsed.data;
   return {
     leaseId: body.lease_id,
     periodStart: body.period_start,
