@@ -259,7 +259,7 @@ test("reads strict aggregate usage and immutable per-lease settlement", async ()
   ).toBeTrue();
 });
 
-test("fails closed on malformed usage and settlement responses", async () => {
+test("fails closed on malformed usage and mismatched settlement responses", async () => {
   for (const body of [
     {
       period: "2026-02-30",
@@ -296,6 +296,32 @@ test("fails closed on malformed usage and settlement responses", async () => {
     fetchImpl: async () =>
       Response.json({
         lease_id: "33333333-3333-4333-8333-333333333333",
+        period_start: "2026-07-22T12:00:00.000Z",
+        period_end: "2026-07-22T12:05:00.000Z",
+        unit: "mib_milliseconds",
+        quantity: 400,
+        settled_at: "2026-07-22T12:05:01.000Z",
+        state: "settled",
+      }),
+  });
+  await expect(client.settlement(lease.id, jwt)).rejects.toMatchObject({
+    code: "invalid_response",
+  });
+
+  await expect(client.settlement("33333333-3333-4333-8333-333333333333", jwt))
+    .resolves.toMatchObject({
+      leaseId: "33333333-3333-4333-8333-333333333333",
+      quantity: 400,
+    });
+});
+
+test("rejects a settlement quantity outside the safe integer range", async () => {
+  const client = createCailSandboxClient({
+    baseUrl: "https://x",
+    app: "kale",
+    fetchImpl: async () =>
+      Response.json({
+        lease_id: lease.id,
         period_start: "2026-07-22T12:00:00.000Z",
         period_end: "2026-07-22T12:05:00.000Z",
         unit: "mib_milliseconds",
