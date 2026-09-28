@@ -107,11 +107,13 @@ bun run check
 bun pm pack --dry-run
 ```
 
-The package depends directly on `@cuny-ai-lab/cail-log` `0.6.0`. The package
+The package depends directly on `@cuny-ai-lab/cail-log` `0.6.4`. The package
 dry run builds generated JavaScript and declarations into `dist` and includes
 the contract, README, and license; it does not ship a duplicate service schema
 or a vendored dependency artifact.
 
 The release workflow checks out a stable `vX.Y.Z` tag, installs the frozen
 lockfile, verifies that the tag matches `package.json`, runs `bun run check`,
-and publishes to GitHub Packages.
+and publishes to the public npm registry through trusted publishing: npm
+accepts the workflow's short-lived GitHub identity, so no npm token exists, and
+each release carries a provenance attestation.
