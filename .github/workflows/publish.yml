@@ -4,9 +4,11 @@ on:
   release:
     types: [published]
 
+# Trusted publishing: npm accepts this workflow's short-lived OIDC identity,
+# so no npm token is stored anywhere.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
   publish:
@@ -25,18 +27,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install frozen dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          config_dir="$(mktemp -d "${RUNNER_TEMP%/}/cail-sandbox-client-bunfig.XXXXXX")"
-          config_path="$config_dir/bunfig.toml"
-          trap 'rm -rf "$config_dir"' EXIT
-          printf '[install.scopes]\n"@cuny-ai-lab" = { token = "%s", url = "https://npm.pkg.github.com" }\n' "$GITHUB_PACKAGES_TOKEN" > "$config_path"
-          chmod 600 "$config_path"
-          bun install --config="$config_path" --frozen-lockfile --ignore-scripts
-        env:
-          GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Verify release tag matches package version
         env:
@@ -55,7 +46,14 @@ jobs:
       - name: Check source, tests, build, and package
         run: bun run check
 
-      - name: Publish to GitHub Packages
-        run: bun publish --registry https://npm.pkg.github.com
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # npm trusted publishing needs Node 22.14+ and npm 11.5.1+.
+      - name: Set up Node for trusted publishing
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install the npm CLI that supports trusted publishing
+        run: npm install --global npm@11.20.0
+
+      - name: Publish to npm
+        run: npm publish --access public --ignore-scripts
