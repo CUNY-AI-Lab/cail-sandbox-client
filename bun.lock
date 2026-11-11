@@ -7,7 +7,7 @@
       "dependencies": {
         "@cuny-ai-lab/cail-log": "0.6.4",
         "eventsource-parser": "3.1.0",
-        "zod": "4.4.3",
+        "zod": "4.6.6",
       },
       "devDependencies": {
         "@oxlint/plugins": "1.79.0",
@@ -17,6 +17,9 @@
         "typescript": "^5.9.3",
       },
     },
+  },
+  "overrides": {
+    "zod": "4.6.6",
   },
   "packages": {
     "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@0.6.4", "", { "dependencies": { "zod": "4.4.3" } }, "sha512-j/YEmBC1hi/64rYTmHp8sawk5xJCQMCBU0F2ZllFIMbXMEG3mq0yF5SYo9sgqjn0MHy+ZQLdE2Svbz/oUbOTRA=="],
@@ -75,6 +78,6 @@
 
     "undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
-    "zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
+    "zod": ["zod@4.6.6", "", {}, "sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA=="],
   }
 }
