@@ -49,6 +49,9 @@
   "dependencies": {
     "@cuny-ai-lab/cail-log": "0.6.4",
     "eventsource-parser": "3.1.0",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
+  },
+  "overrides": {
+    "zod": "4.6.6"
   }
 }
